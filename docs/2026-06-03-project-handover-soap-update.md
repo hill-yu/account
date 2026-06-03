@@ -8,18 +8,17 @@ This addendum records the current real-fetch direction for the standalone collec
 - The collector runtime now supports an `AdManagerSoapReportFetcher` path alongside `stub` and `admanager_rest`.
 - The SOAP client implementation uses Ad Manager `ReportService` through the `googleads` library.
 
-## URL-Level AdX Report Definition
+## Site-Level AdX Report Definition
 
 The current minimum report definition targets the existing `site_daily_reports` schema:
 
-- dimensions: `DATE_PT`, `URL_ID`, `URL_NAME`
+- dimensions: `DATE_PT`, `SITE_NAME`
 - columns:
   - `AD_EXCHANGE_RESPONSES_SERVED`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM`
-- report type: `HISTORICAL`
 - time zone type: `PACIFIC`
 
 Normalized rows remain aligned with the current staging and projection flow:
@@ -48,4 +47,4 @@ Normalized rows remain aligned with the current staging and projection flow:
 
 ## Remaining Real-Account Dependency
 
-Local implementation is ready for real-account validation, but success still depends on the target Ad Manager account returning rows for this URL-level AdX SOAP definition.
+Local implementation is ready for real-account validation, and the current real account now returns rows for this `SITE_NAME`-based AdX SOAP definition. Revenue and eCPM unit normalization remains the next follow-up step.

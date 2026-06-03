@@ -253,16 +253,15 @@ You should see the task move from `pending` to `in_progress` to `succeeded`, and
 
 The real collector fetcher now uses Ad Manager SOAP `ReportService` for the standalone MVP real-data path.
 
-The first validated report definition targets URL-level AdX data:
+The first validated report definition targets site-level AdX data that can be projected through the existing row schema:
 
-- dimensions: `DATE_PT`, `URL_ID`, `URL_NAME`
+- dimensions: `DATE_PT`, `SITE_NAME`
 - columns:
   - `AD_EXCHANGE_RESPONSES_SERVED`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM`
-- report type: `HISTORICAL`
 - time zone type: `PACIFIC`
 - date range: one fixed day per task
 

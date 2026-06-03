@@ -9,8 +9,7 @@ from typing import Any, Callable
 
 REQUIRED_CSV_COLUMNS = (
     "Dimension.DATE_PT",
-    "Dimension.URL_ID",
-    "Dimension.URL_NAME",
+    "Dimension.SITE_NAME",
     "Column.AD_EXCHANGE_RESPONSES_SERVED",
     "Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS",
     "Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS",
@@ -25,7 +24,7 @@ def _google_date(value: date) -> dict[str, int]:
 
 @dataclass(frozen=True)
 class SoapReportDefinition:
-    dimensions: tuple[str, ...] = ("DATE_PT", "URL_ID", "URL_NAME")
+    dimensions: tuple[str, ...] = ("DATE_PT", "SITE_NAME")
     columns: tuple[str, ...] = (
         "AD_EXCHANGE_RESPONSES_SERVED",
         "AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS",
@@ -33,7 +32,6 @@ class SoapReportDefinition:
         "AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE",
         "AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM",
     )
-    report_type: str = "HISTORICAL"
     time_zone_type: str = "PACIFIC"
     schema_version: str = "admanager_site_core_v1"
 
@@ -44,7 +42,6 @@ class SoapReportDefinition:
             "dateRangeType": "CUSTOM_DATE",
             "startDate": _google_date(report_date),
             "endDate": _google_date(report_date),
-            "reportType": self.report_type,
             "timeZoneType": self.time_zone_type,
         }
 
@@ -65,8 +62,8 @@ def parse_report_csv(raw_csv: str, *, report_date: date) -> list[dict[str, objec
         rows.append(
             {
                 "report_date": report_date.isoformat(),
-                "url_id": _require_text(row, "Dimension.URL_ID"),
-                "url": _require_text(row, "Dimension.URL_NAME"),
+                "url_id": _require_text(row, "Dimension.SITE_NAME"),
+                "url": _require_text(row, "Dimension.SITE_NAME"),
                 "responses_served": _parse_int(
                     row.get("Column.AD_EXCHANGE_RESPONSES_SERVED"),
                     field_name="Column.AD_EXCHANGE_RESPONSES_SERVED",
