@@ -76,11 +76,11 @@ def parse_report_csv(raw_csv: str, *, report_date: date) -> list[dict[str, objec
                     row.get("Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS"),
                     field_name="Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS",
                 ),
-                "revenue": _parse_decimal_string(
+                "revenue": _parse_micros_decimal_string(
                     row.get("Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE"),
                     field_name="Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE",
                 ),
-                "ecpm": _parse_decimal_string(
+                "ecpm": _parse_micros_decimal_string(
                     row.get("Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM"),
                     field_name="Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM",
                 ),
@@ -128,6 +128,12 @@ def _parse_decimal_string(value: str | None, *, field_name: str) -> str:
         raise ValueError(f"Invalid decimal cell value: {value}") from exc
     if not decimal_value.is_finite():
         raise ValueError(f"Invalid decimal cell value: {value}")
+    return format(decimal_value.quantize(Decimal("0.000001")), "f")
+
+
+def _parse_micros_decimal_string(value: str | None, *, field_name: str) -> str:
+    decimal_string = _parse_decimal_string(value, field_name=field_name)
+    decimal_value = Decimal(decimal_string) / Decimal("1000000")
     return format(decimal_value.quantize(Decimal("0.000001")), "f")
 
 

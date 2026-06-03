@@ -38,6 +38,7 @@ Normalized rows remain aligned with the current staging and projection flow:
 - SOAP downloader orchestration is covered with a fake downloader test.
 - Collector runtime tests confirm `admanager_soap` fetcher selection.
 - Batch ingestion and final table projection remain compatible with the normalized row schema.
+- SOAP `AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE` and `AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM` are now normalized from micros into 6-decimal strings before batch upload.
 
 ## Important Guardrails
 

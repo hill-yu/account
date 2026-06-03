@@ -31,8 +31,8 @@ def test_soap_report_definition_builds_expected_query() -> None:
 
 def test_parse_report_csv_normalizes_adx_url_rows() -> None:
     raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-03,jane.ghfkl.com,1000,950,15,12.345678,12.995450
-2026-06-03,longan.ghfkl.com,800,760,8,4.250000,5.592105
+2026-06-03,jane.ghfkl.com,1000,950,15,12345678,12995450
+2026-06-03,longan.ghfkl.com,800,760,8,4250000,5592105
 """
 
     rows = parse_report_csv(raw_csv, report_date=date(2026, 6, 3))
@@ -63,7 +63,7 @@ def test_parse_report_csv_normalizes_adx_url_rows() -> None:
 
 def test_parse_report_csv_rejects_mismatched_row_date() -> None:
     raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-02,jane.ghfkl.com,1000,950,15,12.345678,12.995450
+2026-06-02,jane.ghfkl.com,1000,950,15,12345678,12995450
 """
 
     with pytest.raises(ValueError, match="Unexpected Ad Manager report row date"):
@@ -72,7 +72,7 @@ def test_parse_report_csv_rejects_mismatched_row_date() -> None:
 
 def test_parse_report_csv_rejects_invalid_integer_values() -> None:
     raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-03,jane.ghfkl.com,1.9,950,15,12.345678,12.995450
+2026-06-03,jane.ghfkl.com,1.9,950,15,12345678,12995450
 """
 
     with pytest.raises(ValueError, match="Invalid integer cell value"):
@@ -81,7 +81,7 @@ def test_parse_report_csv_rejects_invalid_integer_values() -> None:
 
 def test_parse_report_csv_rejects_missing_required_columns() -> None:
     raw_csv = """Dimension.DATE_PT,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-03,1000,950,15,12.345678,12.995450
+2026-06-03,1000,950,15,12345678,12995450
 """
 
     with pytest.raises(ValueError, match="missing required columns"):
@@ -90,7 +90,7 @@ def test_parse_report_csv_rejects_missing_required_columns() -> None:
 
 def test_parse_report_csv_rejects_truncated_rows() -> None:
     raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-03,jane.ghfkl.com,1000,950,15,12.345678,
+2026-06-03,jane.ghfkl.com,1000,950,15,12345678,
 """
 
     with pytest.raises(ValueError, match="Missing required decimal cell value"):
@@ -99,7 +99,7 @@ def test_parse_report_csv_rejects_truncated_rows() -> None:
 
 def test_parse_report_csv_supports_comma_formatted_numeric_input() -> None:
     raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-03,jane.ghfkl.com,"1,000","950","15","12,345.678901","12,995.450000"
+2026-06-03,jane.ghfkl.com,"1,000","950","15","12,345,678","12,995,450"
 """
 
     rows = parse_report_csv(raw_csv, report_date=date(2026, 6, 3))
@@ -112,19 +112,40 @@ def test_parse_report_csv_supports_comma_formatted_numeric_input() -> None:
             "responses_served": 1000,
             "impressions": 950,
             "clicks": 15,
-            "revenue": "12345.678901",
-            "ecpm": "12995.450000",
+            "revenue": "12.345678",
+            "ecpm": "12.995450",
         }
     ]
 
 
 def test_parse_report_csv_rejects_non_finite_decimal_values() -> None:
     raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-03,jane.ghfkl.com,1000,950,15,NaN,12.995450
+2026-06-03,jane.ghfkl.com,1000,950,15,NaN,12995450
 """
 
     with pytest.raises(ValueError, match="Invalid decimal cell value"):
         parse_report_csv(raw_csv, report_date=date(2026, 6, 3))
+
+
+def test_parse_report_csv_normalizes_real_micros_values() -> None:
+    raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
+2026-05-14,jane.ghfkl.com,34,33,4,7646800,231721203
+"""
+
+    rows = parse_report_csv(raw_csv, report_date=date(2026, 5, 14))
+
+    assert rows == [
+        {
+            "report_date": "2026-05-14",
+            "url_id": "jane.ghfkl.com",
+            "url": "jane.ghfkl.com",
+            "responses_served": 34,
+            "impressions": 33,
+            "clicks": 4,
+            "revenue": "7.646800",
+            "ecpm": "231.721203",
+        }
+    ]
 
 
 class FakeDownloader:
@@ -156,7 +177,7 @@ class FakeDownloader:
         )
         outfile.write(
             b"Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM\n"
-            b"2026-06-03,jane.ghfkl.com,1000,950,15,12.345678,12.995450\n"
+            b"2026-06-03,jane.ghfkl.com,1000,950,15,12345678,12995450\n"
         )
 
 
