@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+from collections.abc import Iterable
+import hashlib
+import json
+from typing import Protocol
+
+import requests
+
+from app.admanager_soap import AdManagerSoapClient
+from app.admanager_api import AdManagerApiClient
+from app.models import CollectorTask, FetchBatch
+from app.oauth import refresh_access_token
+from app.models import RuntimeSettings
+
+
+class Fetcher(Protocol):
+    def fetch(self, task: CollectorTask) -> Iterable[FetchBatch]:
+        ...
+
+
+class StubFetcher:
+    def fetch(self, task: CollectorTask) -> Iterable[FetchBatch]:
+        rows = [
+            {
+                "report_date": task.report_date.isoformat(),
+                "url_id": "stub-url-1",
+                "url": "https://stub.example.com/",
+                "responses_served": 1200,
+                "impressions": 1000,
+                "clicks": 12,
+                "revenue": "15.500000",
+                "ecpm": "15.500000",
+            },
+            {
+                "report_date": task.report_date.isoformat(),
+                "url_id": "stub-url-2",
+                "url": "https://stub.example.com/news",
+                "responses_served": 800,
+                "impressions": 650,
+                "clicks": 7,
+                "revenue": "6.500000",
+                "ecpm": "10.000000",
+            },
+        ]
+        return (
+            FetchBatch(
+                batch_key="page-1",
+                row_count=len(rows),
+                payload_hash=_hash_rows(rows),
+                schema_version="admanager_site_core_v1",
+                rows=rows,
+            ),
+        )
+
+
+class AdManagerRestReportFetcher:
+    def __init__(
+        self,
+        *,
+        network_code: str,
+        client_id: str,
+        client_secret: str,
+        refresh_token: str,
+        timeout_seconds: int = 30,
+        session: requests.Session | object | None = None,
+        poll_interval_seconds: float = 1.0,
+        page_size: int = 500,
+    ) -> None:
+        self._network_code = network_code
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._refresh_token = refresh_token
+        self._timeout_seconds = timeout_seconds
+        self._session = session or requests.Session()
+        self._poll_interval_seconds = poll_interval_seconds
+        self._page_size = page_size
+
+    def fetch(self, task: CollectorTask) -> Iterable[FetchBatch]:
+        access_token = refresh_access_token(
+            client_id=self._client_id,
+            client_secret=self._client_secret,
+            refresh_token=self._refresh_token,
+            timeout_seconds=self._timeout_seconds,
+            session=self._session,
+        )
+        api_client = AdManagerApiClient(
+            network_code=self._network_code,
+            access_token=access_token,
+            timeout_seconds=self._timeout_seconds,
+            session=self._session,
+            poll_interval_seconds=self._poll_interval_seconds,
+            page_size=self._page_size,
+        )
+        for page_number, rows in enumerate(api_client.iter_report_rows(task), start=1):
+            yield FetchBatch(
+                batch_key=f"page-{page_number}",
+                row_count=len(rows),
+                payload_hash=_hash_rows(rows),
+                schema_version=api_client.report_definition.schema_version,
+                rows=rows,
+            )
+
+
+class AdManagerSoapReportFetcher:
+    def __init__(
+        self,
+        *,
+        network_code: str,
+        client_id: str,
+        client_secret: str,
+        refresh_token: str,
+        timeout_seconds: int = 30,
+        soap_client: AdManagerSoapClient | None = None,
+    ) -> None:
+        self._client = soap_client or AdManagerSoapClient(
+            network_code=network_code,
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def fetch(self, task: CollectorTask) -> Iterable[FetchBatch]:
+        rows = self._client.fetch_rows(task_id=task.id, report_date=task.report_date)
+        if not rows:
+            return ()
+        return (
+            FetchBatch(
+                batch_key="page-1",
+                row_count=len(rows),
+                payload_hash=_hash_rows(rows),
+                schema_version=self._client.report_definition.schema_version,
+                rows=rows,
+            ),
+        )
+
+
+def build_fetcher(settings: RuntimeSettings) -> Fetcher:
+    if settings.fetch_mode == "stub":
+        return StubFetcher()
+    if settings.fetch_mode == "admanager_rest":
+        return AdManagerRestReportFetcher(
+            network_code=_require_setting(settings.admanager_network_code, "admanager_network_code"),
+            client_id=_require_setting(settings.google_oauth_client_id, "google_oauth_client_id"),
+            client_secret=_require_setting(settings.google_oauth_client_secret, "google_oauth_client_secret"),
+            refresh_token=_require_setting(settings.google_oauth_refresh_token, "google_oauth_refresh_token"),
+            timeout_seconds=settings.request_timeout_seconds,
+        )
+    if settings.fetch_mode == "admanager_soap":
+        return AdManagerSoapReportFetcher(
+            network_code=_require_setting(settings.admanager_network_code, "admanager_network_code"),
+            client_id=_require_setting(settings.google_oauth_client_id, "google_oauth_client_id"),
+            client_secret=_require_setting(settings.google_oauth_client_secret, "google_oauth_client_secret"),
+            refresh_token=_require_setting(settings.google_oauth_refresh_token, "google_oauth_refresh_token"),
+            timeout_seconds=settings.request_timeout_seconds,
+        )
+    raise ValueError(f"Unsupported fetch mode: {settings.fetch_mode}")
+
+
+def _hash_rows(rows: list[dict[str, object]]) -> str:
+    return hashlib.sha256(
+        json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _require_setting(value: str | None, field_name: str) -> str:
+    if value is None or value == "":
+        raise ValueError(f"Missing runtime setting: {field_name}")
+    return value

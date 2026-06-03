@@ -10,7 +10,7 @@ import pytest
 
 from app.models import BootstrapSettings, CollectorRuntimeConfig, CollectorTask, FetchBatch, RuntimeSettings
 from app.config import SettingsError, load_bootstrap_settings, load_settings
-from app.fetcher import AdManagerRestReportFetcher, StubFetcher
+from app.fetcher import AdManagerRestReportFetcher, AdManagerSoapReportFetcher, StubFetcher
 from app.egress import EgressChecker
 from app.runtime import CollectorRuntime
 
@@ -160,6 +160,49 @@ def test_runtime_fetches_batches_and_callbacks_success() -> None:
     assert client.status_callbacks == [(7, "succeeded", "uploaded 2 batches")]
 
 
+def test_runtime_uploads_single_soap_batch_and_marks_task_succeeded() -> None:
+    task = CollectorTask(
+        id=11,
+        account_id=3,
+        collector_instance_id=2,
+        task_type="report_fetch",
+        report_date=date(2026, 6, 3),
+        status="in_progress",
+    )
+    batch = FetchBatch(
+        batch_key="page-1",
+        row_count=1,
+        payload_hash="soap-hash",
+        schema_version="admanager_site_core_v1",
+        rows=[
+            {
+                "report_date": "2026-06-03",
+                "url_id": "2001",
+                "url": "https://example.com/a",
+                "responses_served": 1000,
+                "impressions": 950,
+                "clicks": 15,
+                "revenue": "12.345678",
+                "ecpm": "12.995450",
+            }
+        ],
+    )
+    client = FakeControlPlaneClient(next_task_result=task)
+    fetcher = FakeFetcher([batch])
+    runtime = CollectorRuntime(
+        settings=build_settings(),
+        control_plane_client=client,
+        egress_checker=FakeEgressChecker("203.0.113.10"),
+        fetcher=fetcher,
+    )
+
+    result = runtime.run_once()
+
+    assert result.outcome == "succeeded"
+    assert client.batch_callbacks == [(11, batch)]
+    assert client.status_callbacks == [(11, "succeeded", "uploaded 1 batches")]
+
+
 def test_load_settings_honors_explicit_empty_mapping() -> None:
     with pytest.raises(SettingsError, match="Missing required environment variable"):
         load_settings({})
@@ -286,7 +329,7 @@ def test_runtime_from_settings_builds_admanager_soap_fetcher() -> None:
 
     runtime = CollectorRuntime.from_settings(settings)
 
-    assert runtime.settings.fetch_mode == "admanager_soap"
+    assert isinstance(runtime.fetcher, AdManagerSoapReportFetcher)
 
 
 def test_egress_checker_supports_inline_observed_ip() -> None:
