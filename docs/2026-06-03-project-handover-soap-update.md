@@ -7,6 +7,23 @@ This addendum records the current real-fetch direction for the standalone collec
 - Authorized real accounts now receive `fetch_mode = admanager_soap` from runtime-config.
 - The collector runtime now supports an `AdManagerSoapReportFetcher` path alongside `stub` and `admanager_rest`.
 - The SOAP client implementation uses Ad Manager `ReportService` through the `googleads` library.
+- The reusable single-account entrypoint now lives in `collector/app/adx_report_service.py`.
+
+## Reusable Python Entry Points
+
+The module is designed so both the collector and standalone scripts call the same service layer:
+
+- `AdxApiCredentials`
+- `AdxReportRow`
+- `AdxReportService.fetch_site_daily_report(...)`
+- `AdxReportService.fetch_site_daily_range(...)`
+- `AdxReportService.fetch_site_daily_rows_as_dicts(...)`
+- `AdxReportService.build_fetch_batch(...)`
+
+Recommended use:
+
+- collector runtime: call the service and convert to `FetchBatch`
+- standalone scripts or backend jobs: call the service directly and consume typed rows or compatibility dict rows
 
 ## Site-Level AdX Report Definition
 
@@ -39,6 +56,7 @@ Normalized rows remain aligned with the current staging and projection flow:
 - Collector runtime tests confirm `admanager_soap` fetcher selection.
 - Batch ingestion and final table projection remain compatible with the normalized row schema.
 - SOAP `AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE` and `AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM` are now normalized from micros into 6-decimal strings before batch upload.
+- Real-account verification against network `23347208010` returns typed rows, compatibility dict rows, and a valid `FetchBatch` from the reusable service module.
 
 ## Important Guardrails
 

@@ -7,8 +7,8 @@ from typing import Protocol
 
 import requests
 
-from app.admanager_soap import AdManagerSoapClient
 from app.admanager_api import AdManagerApiClient
+from app.adx_report_service import AdxApiCredentials, AdxReportService
 from app.models import CollectorTask, FetchBatch
 from app.oauth import refresh_access_token
 from app.models import RuntimeSettings
@@ -110,30 +110,23 @@ class AdManagerSoapReportFetcher:
         client_id: str,
         client_secret: str,
         refresh_token: str,
-        timeout_seconds: int = 30,
-        soap_client: AdManagerSoapClient | None = None,
+        service: AdxReportService | None = None,
     ) -> None:
-        self._client = soap_client or AdManagerSoapClient(
-            network_code=network_code,
-            client_id=client_id,
-            client_secret=client_secret,
-            refresh_token=refresh_token,
-            timeout_seconds=timeout_seconds,
+        self._service = service or AdxReportService(
+            credentials=AdxApiCredentials(
+                network_code=network_code,
+                client_id=client_id,
+                client_secret=client_secret,
+                refresh_token=refresh_token,
+            )
         )
 
     def fetch(self, task: CollectorTask) -> Iterable[FetchBatch]:
-        rows = self._client.fetch_rows(task_id=task.id, report_date=task.report_date)
-        if not rows:
+        rows = self._service.fetch_site_daily_report(report_date=task.report_date, task_id=task.id)
+        batch = self._service.build_fetch_batch(rows=rows)
+        if batch is None:
             return ()
-        return (
-            FetchBatch(
-                batch_key="page-1",
-                row_count=len(rows),
-                payload_hash=_hash_rows(rows),
-                schema_version=self._client.report_definition.schema_version,
-                rows=rows,
-            ),
-        )
+        return (batch,)
 
 
 def build_fetcher(settings: RuntimeSettings) -> Fetcher:
@@ -153,7 +146,6 @@ def build_fetcher(settings: RuntimeSettings) -> Fetcher:
             client_id=_require_setting(settings.google_oauth_client_id, "google_oauth_client_id"),
             client_secret=_require_setting(settings.google_oauth_client_secret, "google_oauth_client_secret"),
             refresh_token=_require_setting(settings.google_oauth_refresh_token, "google_oauth_refresh_token"),
-            timeout_seconds=settings.request_timeout_seconds,
         )
     raise ValueError(f"Unsupported fetch mode: {settings.fetch_mode}")
 
