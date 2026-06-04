@@ -28,6 +28,27 @@ if ($accountKey === '' || $reportDate === '') {
     exit;
 }
 
+$parsedDate = DateTimeImmutable::createFromFormat('!Y-m-d', $reportDate);
+if ($parsedDate === false || $parsedDate->format('Y-m-d') !== $reportDate) {
+    http_response_code(400);
+    echo json_encode([
+        'ok' => false,
+        'error_code' => 'REQUEST_ERROR',
+        'message' => 'report_date must be YYYY-MM-DD',
+    ], JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+if (strlen($accountKey) > 100) {
+    http_response_code(400);
+    echo json_encode([
+        'ok' => false,
+        'error_code' => 'REQUEST_ERROR',
+        'message' => 'account_key is too long',
+    ], JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
 $requestId = 'req_' . gmdate('Ymd_His') . '_' . bin2hex(random_bytes(4));
 $payload = json_encode([
     'account_key' => $accountKey,
@@ -48,6 +69,17 @@ if ($payload === false) {
 }
 
 $ch = curl_init('http://127.0.0.1:9100/internal/fetch');
+if ($ch === false) {
+    http_response_code(500);
+    echo json_encode([
+        'ok' => false,
+        'request_id' => $requestId,
+        'error_code' => 'FETCH_ERROR',
+        'message' => 'failed to initialize curl',
+    ], JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
 curl_setopt_array($ch, [
     CURLOPT_POST => true,
     CURLOPT_RETURNTRANSFER => true,
@@ -73,4 +105,11 @@ if ($body === false) {
 }
 
 http_response_code($status > 0 ? $status : 502);
+$decodedBody = json_decode($body, true);
+if (is_array($decodedBody) && !array_key_exists('request_id', $decodedBody)) {
+    $decodedBody['request_id'] = $requestId;
+    echo json_encode($decodedBody, JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
 echo $body;
