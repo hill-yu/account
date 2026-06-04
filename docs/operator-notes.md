@@ -290,6 +290,28 @@ curl "http://localhost:8000/api/v1/operator/reports/site-daily?account_id=1&repo
 curl "http://localhost:8000/api/v1/operator/reports/account-daily?account_id=1&report_date=2026-05-21"
 ```
 
+## VPS Trigger Stack
+
+The VPS deployment path uses:
+
+- public PHP trigger: `GET /ke/fetch.php`
+- local Python API: `POST http://127.0.0.1:9100/internal/fetch`
+- result storage tables:
+  - `adx_accounts`
+  - `adx_account_proxies`
+  - `adx_fetch_runs`
+  - `adx_site_daily_reports`
+
+The current production-style fetch still uses the verified site-level SOAP report semantics:
+
+- `DATE_PT`
+- `SITE_NAME`
+- `AD_EXCHANGE_RESPONSES_SERVED`
+- `AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS`
+- `AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS`
+- `AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE`
+- `AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM`
+
 ## Operational Caveats
 
 - The compose file contains a placeholder `COLLECTOR_INSTANCE_TOKEN` by design. Do not expect `collector-example` to work unchanged.
