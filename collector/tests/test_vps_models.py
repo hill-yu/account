@@ -13,10 +13,11 @@ from app.vps_config import VpsApiSettings
 
 def test_vps_settings_defaults_are_repo_local_and_deterministic() -> None:
     expected_base_dir = Path(__file__).resolve().parents[1]
+    expected_env_file = expected_base_dir.parent / "deploy" / "vps" / "env" / "adx-fetch-api.env"
     settings = VpsApiSettings()
 
     assert settings.database_url == f"sqlite:///{(expected_base_dir / 'vps_api.db').as_posix()}"
-    assert Path(VpsApiSettings.model_config["env_file"]) == expected_base_dir / ".env"
+    assert Path(VpsApiSettings.model_config["env_file"]) == expected_env_file
 
 
 def test_get_engine_uses_configured_database_url(monkeypatch, tmp_path) -> None:
