@@ -1,26 +1,31 @@
-# VPS Trigger Deployment
+# VPS 触发式部署说明
 
 ## Python API
 
-1. Install Python dependencies from `collector/requirements.txt`.
-2. Copy `deploy/vps/env/adx-fetch-api.env.example` to `deploy/vps/env/adx-fetch-api.env`.
-3. Set a real MySQL URL and trigger token.
-4. Run `python scripts/init_vps_schema.py`. The Python settings layer will read `deploy/vps/env/adx-fetch-api.env` automatically.
-5. Start the API from `collector/` with `python -m uvicorn app.vps_api:app --host 127.0.0.1 --port 9100`.
+1. 安装 `collector/requirements.txt` 里的 Python 依赖。
+2. 将 `deploy/vps/env/adx-fetch-api.env.example` 复制为 `deploy/vps/env/adx-fetch-api.env`。
+3. 填写真实的 MySQL 连接串和触发令牌。
+4. 运行 `python scripts/init_vps_schema.py` 初始化表结构。  
+   Python 设置层会自动读取 `deploy/vps/env/adx-fetch-api.env`。
+5. 在 `collector/` 目录下启动 API：
 
-## PHP Trigger
+```bash
+python -m uvicorn app.vps_api:app --host 127.0.0.1 --port 9100
+```
 
-- Place `deploy/vps/php/fetch.php` under the public API site root.
-- Ensure PHP has `curl` enabled.
-- Set `ADX_TRIGGER_TOKEN` in the PHP-FPM environment.
+## PHP 触发器
+
+- 将 `deploy/vps/php/fetch.php` 放到对外 API 站点的根目录或对应路由目录下。
+- 确保 PHP 已启用 `curl` 扩展。
+- 在 PHP-FPM 环境里配置 `ADX_TRIGGER_TOKEN`。
 
 ## Cloudflare
 
-- Point the API subdomain to the VPS origin.
-- Keep Cloudflare as DNS/HTTPS ingress only.
+- 将 API 子域名解析并代理到你的 VPS 源站。
+- Cloudflare 只负责 DNS、HTTPS 和入口代理，不承载拉数逻辑。
 
-## Smoke Test
+## 冒烟测试
 
-Call:
+部署完成后，可以直接访问：
 
 `https://api.example.com/ke/fetch.php?account_key=a1&report_date=2026-05-14&token=change-me`

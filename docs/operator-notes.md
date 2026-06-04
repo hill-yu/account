@@ -1,42 +1,42 @@
-# Operator Notes
+# 操作说明
 
-These notes describe the local phase-1 operator flow for the standalone MVP after the real Google OAuth and runtime-config handshake were added.
+这份文档描述的是当前独立 MVP 在接入真实 Google OAuth 和 runtime-config 握手之后的本地操作流程。
 
-## Services And Startup Order
+## 服务与启动顺序
 
-## Fastest Virtual Demo
+## 最快的虚拟演示
 
-If you want the fastest possible local体验 and do not need real Google OAuth yet, run:
+如果你想最快体验本地全链路，但暂时不需要真实 Google OAuth，可以直接运行：
 
 ```bash
 python scripts/virtual_flow.py
 ```
 
-That script performs a full local round-trip with:
+这个脚本会完成一次完整的本地往返流程，包括：
 
-- a temporary SQLite database
-- a real backend process
-- a real collector process
-- stub site data
+- 一个临时 SQLite 数据库
+- 一个真实启动的 backend 进程
+- 一个真实启动的 collector 进程
+- 一份 stub 站点数据
 
-It prints a JSON summary including:
+它会输出一段 JSON 摘要，包含：
 
-- collector exit code
-- final task status
-- projected `site_daily` row count
-- first site URL
-- final account-level `responses_served`
-- final account-level `revenue`
+- collector 退出码
+- 最终任务状态
+- 投影后的 `site_daily` 行数
+- 第一条站点 URL
+- 最终账号级 `responses_served`
+- 最终账号级 `revenue`
 
-Recommended startup order:
+推荐启动顺序：
 
-1. Start PostgreSQL.
-2. Start the backend and wait for `/health` to return `{"status":"ok"}`.
-3. Create the account, OAuth app, collector instance, proxy binding, and first sync task.
-4. Complete Google OAuth authorization for that account.
-5. Run the example collector with the real instance token.
+1. 启动 PostgreSQL。
+2. 启动 backend，并等待 `/health` 返回 `{"status":"ok"}`。
+3. 创建账号、OAuth 应用、collector 实例、代理绑定和第一条同步任务。
+4. 为该账号完成 Google OAuth 授权。
+5. 使用真实 `instance_token` 运行示例 collector。
 
-Commands:
+命令如下：
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d postgres
@@ -44,58 +44,58 @@ docker compose -f deploy/docker-compose.yml up -d backend
 curl http://localhost:8000/health
 ```
 
-The backend container runs `alembic upgrade head` before starting Uvicorn, so schema bootstrapping is part of normal startup.
+backend 容器会在启动 Uvicorn 之前自动执行 `alembic upgrade head`，所以 schema 初始化已经包含在正常启动流程里。
 
-## Runtime Boundary
+## Runtime 边界
 
-The collector no longer receives proxy settings and Google OAuth secrets directly from Compose.
+collector 不再直接从 Compose 接收代理配置和 Google OAuth 密钥。
 
-Instead:
+现在的流程是：
 
-1. the operator creates account, OAuth, instance, and proxy records through operator routes
-2. the collector authenticates with its `instance_token`
-3. the collector fetches `GET /api/v1/collector/runtime-config`
-4. the backend returns the proxy binding plus Google runtime credentials for that instance
+1. 操作端通过 operator 路由创建账号、OAuth、实例和代理记录
+2. collector 使用自己的 `instance_token` 进行认证
+3. collector 拉取 `GET /api/v1/collector/runtime-config`
+4. backend 将代理绑定和 Google runtime 凭据一起返回给该 collector 实例
 
-This is still a local MVP. Secrets are currently stored in the backend database in raw form and then returned to the authenticated collector instance. That is acceptable only for this phase and only for a local/private environment.
+这仍然是本地 MVP。当前阶段里，密钥会以原始形式存储在 backend 数据库中，然后返回给已认证的 collector 实例。这只适用于当前阶段，也只适用于本地/私有环境。
 
-## Environment Variables
+## 环境变量
 
 ### Backend
 
-The backend reads `ADX_COLLECTOR_`-prefixed settings.
+backend 使用 `ADX_COLLECTOR_` 前缀的设置项。
 
-- `ADX_COLLECTOR_DATABASE_URL`: SQLAlchemy connection string. Compose uses `postgresql+psycopg://adx:adx@postgres:5432/adx_collector`.
-- `ADX_COLLECTOR_APP_ENV`: free-form environment label such as `development` or `docker`.
-- `ADX_COLLECTOR_SQL_ECHO`: optional SQLAlchemy SQL logging flag, defaults to `False`.
-- `ADX_COLLECTOR_APP_NAME`: optional FastAPI app title.
+- `ADX_COLLECTOR_DATABASE_URL`：SQLAlchemy 连接串。Compose 默认使用 `postgresql+psycopg://adx:adx@postgres:5432/adx_collector`
+- `ADX_COLLECTOR_APP_ENV`：环境标签，例如 `development` 或 `docker`
+- `ADX_COLLECTOR_SQL_ECHO`：可选的 SQLAlchemy 日志开关，默认为 `False`
+- `ADX_COLLECTOR_APP_NAME`：可选的 FastAPI 应用标题
 
 ### Collector
 
-The collector is env-only and exits after one runtime pass.
+collector 完全由环境变量驱动，并且执行一次 runtime pass 后退出。
 
-- `CONTROL_PLANE_BASE_URL`: base URL for the backend, for example `http://backend:8000` inside Compose.
-- `COLLECTOR_INSTANCE_TOKEN`: bearer token for the collector instance created through the operator API.
-- `COLLECTOR_EGRESS_CHECK_URL`: optional public IP endpoint, defaults to `https://api.ipify.org`.
-- `COLLECTOR_REQUEST_TIMEOUT_SECONDS`: optional HTTP timeout, defaults to `30`.
+- `CONTROL_PLANE_BASE_URL`：backend 基础地址，例如在 Compose 中是 `http://backend:8000`
+- `COLLECTOR_INSTANCE_TOKEN`：通过 operator API 创建 collector 实例时得到的 bearer token
+- `COLLECTOR_EGRESS_CHECK_URL`：可选的公网 IP 检查地址，默认是 `https://api.ipify.org`
+- `COLLECTOR_REQUEST_TIMEOUT_SECONDS`：可选 HTTP 超时，默认 `30`
 
-Everything else needed to execute a task now comes from the runtime-config route:
+其余执行任务所需信息全部来自 runtime-config 路由，包括：
 
-- proxy protocol, host, port, username, password
-- expected egress IP
+- 代理协议、host、port、username、password
+- 预期出口 IP
 - fetch mode
 - Ad Manager network code
 - Google OAuth client id
 - Google OAuth client secret
 - Google OAuth refresh token
 
-## First Manual Sync Flow
+## 首次手工同步流程
 
-Replace every all-caps placeholder such as `ACCOUNT_ID`, `INSTANCE_ID`, and `OAUTH_APP_ID` before sending the example requests.
+发送示例请求前，请把所有大写占位符，例如 `ACCOUNT_ID`、`INSTANCE_ID`、`OAUTH_APP_ID`，都替换成真实值。
 
-### 1. Create an account
+### 1. 创建账号
 
-Use `external_account_id` to store the Google Ad Manager network code in this phase-1 MVP.
+在这个 phase-1 MVP 里，`external_account_id` 用来存储 Google Ad Manager network code。
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/operator/accounts \
@@ -107,9 +107,9 @@ curl -X POST http://localhost:8000/api/v1/operator/accounts \
   }'
 ```
 
-Record the returned `id` as `ACCOUNT_ID`.
+把返回的 `id` 记录为 `ACCOUNT_ID`。
 
-### 2. Create the OAuth app config
+### 2. 创建 OAuth 应用配置
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/operator/oauth-apps \
@@ -125,32 +125,32 @@ curl -X POST http://localhost:8000/api/v1/operator/oauth-apps \
   }'
 ```
 
-Record the returned `id` as `OAUTH_APP_ID`.
+把返回的 `id` 记录为 `OAUTH_APP_ID`。
 
-### 3. Generate the authorization URL
+### 3. 生成授权 URL
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/operator/oauth-apps/1/authorization-url
 ```
 
-Open the returned `authorization_url` in a browser, complete consent, and allow Google to redirect back to:
+在浏览器中打开返回的 `authorization_url`，完成授权，并允许 Google 回调到：
 
 ```text
 http://localhost:8000/api/v1/oauth/google/callback
 ```
 
-After callback succeeds, the backend should mark the OAuth app as:
+回调成功后，backend 应将该 OAuth 应用标记为：
 
 - `authorization_status = authorized`
 - `refresh_token_present = true`
 
-Verify:
+验证：
 
 ```bash
 curl http://localhost:8000/api/v1/operator/oauth-apps
 ```
 
-### 4. Create a collector instance
+### 4. 创建 collector 实例
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/operator/instances \
@@ -163,14 +163,14 @@ curl -X POST http://localhost:8000/api/v1/operator/instances \
   }'
 ```
 
-Record:
+需要记录：
 
 - `INSTANCE_ID`
 - `instance_token`
 
-The `instance_token` is only returned at create time in this MVP. Save it immediately. It is the bearer credential that the collector uses both to pull runtime config and to talk to `/api/v1/collector/*` routes.
+当前 MVP 中，`instance_token` 只会在创建时返回一次，请立即保存。这个 token 是 collector 拉取 runtime-config 和访问 `/api/v1/collector/*` 路由的 bearer 凭据。
 
-### 5. Create the proxy binding
+### 5. 创建代理绑定
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/operator/proxies \
@@ -189,7 +189,7 @@ curl -X POST http://localhost:8000/api/v1/operator/proxies \
   }'
 ```
 
-### 6. Create a manual sync task
+### 6. 创建手工同步任务
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/operator/tasks \
@@ -204,27 +204,27 @@ curl -X POST http://localhost:8000/api/v1/operator/tasks \
   }'
 ```
 
-### 7. Inspect the collector runtime config
+### 7. 查看 collector runtime config
 
-This is optional but useful before the first run.
+这一步可选，但在第一次运行前非常有帮助。
 
 ```bash
 curl http://localhost:8000/api/v1/collector/runtime-config \
   -H "Authorization: Bearer <instance-token>"
 ```
 
-You should see:
+你应该看到：
 
-- proxy fields from the binding
+- 来自代理绑定的代理字段
 - `expected_egress_ip`
 - `google.fetch_mode = admanager_soap`
-- the Ad Manager network code from `external_account_id`
+- 账号 `external_account_id` 中的 Ad Manager network code
 
-If the OAuth app is not fully authorized or the account has no network code, this route returns `409`.
+如果 OAuth 应用尚未完全授权，或者账号没有 network code，这个路由会返回 `409`。
 
-### 8. Run the collector
+### 8. 运行 collector
 
-Use the generated token. The collector will fetch all other runtime settings from the backend.
+使用刚才保存的 token。collector 会从 backend 拉取其余所有 runtime 设置。
 
 ```bash
 docker compose -f deploy/docker-compose.yml run --rm \
@@ -232,14 +232,14 @@ docker compose -f deploy/docker-compose.yml run --rm \
   collector-example
 ```
 
-Expected runtime behavior:
+预期运行行为：
 
-1. The collector requests runtime config from the control plane.
-2. The collector checks its observed public IP through the configured proxy.
-3. If the observed IP does not match the expected egress IP, it posts a `blocked` heartbeat and exits with code `2`.
-4. If the egress IP matches, it posts a `ready` heartbeat, claims one pending task, runs the fetcher, uploads zero or more batches, and marks the task terminal.
+1. collector 从 control plane 请求 runtime config
+2. collector 通过配置的代理检查自己观察到的公网 IP
+3. 如果观察到的 IP 和预期 egress IP 不一致，它会回传一个 `blocked` heartbeat，并以退出码 `2` 退出
+4. 如果 IP 匹配，它会回传一个 `ready` heartbeat，领取一条 pending 任务，执行 fetcher，上传 0 个或多个 batch，并将任务标记为终态
 
-### 9. Inspect task and instance state
+### 9. 查看任务和实例状态
 
 ```bash
 curl http://localhost:8000/api/v1/operator/tasks
@@ -247,25 +247,25 @@ curl http://localhost:8000/api/v1/operator/instances
 curl http://localhost:8000/api/v1/operator/oauth-apps
 ```
 
-You should see the task move from `pending` to `in_progress` to `succeeded`, and the instance `last_heartbeat_at` should be populated.
+你应该看到任务从 `pending` -> `in_progress` -> `succeeded`，同时实例的 `last_heartbeat_at` 被写入。
 
-## Phase-1 Ad Manager Fetcher Notes
+## Phase-1 Ad Manager Fetcher 说明
 
-The real collector fetcher now uses Ad Manager SOAP `ReportService` for the standalone MVP real-data path.
+当前真实 collector fetcher 走的是 Ad Manager SOAP `ReportService`，作为独立 MVP 的真实数据链路。
 
-The first validated report definition targets site-level AdX data that can be projected through the existing row schema:
+当前已验证可用的报表定义是站点级 AdX 数据，并且可以投影进现有的行结构：
 
-- dimensions: `DATE_PT`, `SITE_NAME`
-- columns:
+- 维度：`DATE_PT`、`SITE_NAME`
+- 指标：
   - `AD_EXCHANGE_RESPONSES_SERVED`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM`
-- time zone type: `PACIFIC`
-- date range: one fixed day per task
+- 时区：`PACIFIC`
+- 日期范围：每个任务固定一天
 
-Each returned page is normalized into staging rows with these fields:
+每一页返回数据都会被归一化成以下 staging 字段：
 
 - `report_date`
 - `url_id`
@@ -276,33 +276,33 @@ Each returned page is normalized into staging rows with these fields:
 - `revenue`
 - `ecpm`
 
-Those rows are stored in `collector_ingestion_batches.payload_json` on the control plane side. This gives us a durable staging layer before we wire final business-table mapping.
+这些行会先落到 control plane 侧的 `collector_ingestion_batches.payload_json` 里，作为一个可持久化的中间层，再进入最终业务表。
 
-The backend now also projects those staging rows into final tables:
+backend 当前也会继续把这些 staging 行投影到最终查询表：
 
 - `site_daily_reports`
 - `account_daily_reports`
 
-You can inspect them through:
+你可以通过下面接口查看：
 
 ```bash
 curl "http://localhost:8000/api/v1/operator/reports/site-daily?account_id=1&report_date=2026-05-21"
 curl "http://localhost:8000/api/v1/operator/reports/account-daily?account_id=1&report_date=2026-05-21"
 ```
 
-## VPS Trigger Stack
+## VPS 触发链路
 
-The VPS deployment path uses:
+VPS 部署路径使用：
 
-- public PHP trigger: `GET /ke/fetch.php`
-- local Python API: `POST http://127.0.0.1:9100/internal/fetch`
-- result storage tables:
+- 公网 PHP 触发器：`GET /ke/fetch.php`
+- 本机 Python API：`POST http://127.0.0.1:9100/internal/fetch`
+- 结果存储表：
   - `adx_accounts`
   - `adx_account_proxies`
   - `adx_fetch_runs`
   - `adx_site_daily_reports`
 
-The current production-style fetch still uses the verified site-level SOAP report semantics:
+当前生产化路径仍然使用我们已经验证通过的站点级 SOAP 报表语义：
 
 - `DATE_PT`
 - `SITE_NAME`
@@ -312,19 +312,19 @@ The current production-style fetch still uses the verified site-level SOAP repor
 - `AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE`
 - `AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM`
 
-## Operational Caveats
+## 当前限制与注意事项
 
-- The compose file contains a placeholder `COLLECTOR_INSTANCE_TOKEN` by design. Do not expect `collector-example` to work unchanged.
-- `docker compose up` for all services at once is not the intended first-run path because the collector requires a real instance token and a fully configured backend record set.
-- The backend API is unauthenticated on operator routes in this MVP. Keep the stack local.
-- PostgreSQL data persists in the `postgres-data` named volume until you remove it.
-- OAuth secrets and refresh tokens are currently stored raw in the backend database for MVP speed. That is a known follow-up item, not a production-ready design.
+- Compose 文件中的 `COLLECTOR_INSTANCE_TOKEN` 是占位用的，不要指望 `collector-example` 开箱即用。
+- 不推荐第一次就直接 `docker compose up` 全部服务，因为 collector 依赖真实 instance token 和完整 backend 配置。
+- 当前 MVP 的 operator 路由没有鉴权，请只在本地环境使用。
+- PostgreSQL 数据会保存在 `postgres-data` 命名卷里，除非你手动删除。
+- 为了 MVP 迭代速度，OAuth 密钥和 refresh token 当前仍以原始形式保存在 backend 数据库中。这是已知后续项，不是生产级设计。
 
-## Frontend Console Notes
+## 前端控制台说明
 
-The project now includes a thin frontend control plane in `frontend/`.
+项目当前还包含一个轻量级前端 control plane，位于 `frontend/`。
 
-Start it locally with:
+本地启动方式：
 
 ```bash
 cd frontend
@@ -332,34 +332,34 @@ npm install
 npm run dev
 ```
 
-Default API target:
+默认 API 目标：
 
 - `http://127.0.0.1:8000`
 
-If you are running the backend on another port for local validation:
+如果你在本地验证时 backend 使用了其他端口：
 
 ```bash
 VITE_API_BASE_URL=http://127.0.0.1:8010 npm run dev
 ```
 
-The UI is intentionally narrow in phase 1:
+phase 1 的 UI 故意保持很窄：
 
-- `Operations`: create accounts, OAuth apps, instances, proxies, and tasks
-- `Reports`: inspect `site_daily` and `account_daily`
-- `OAuth callback`: complete Google authorization back into the frontend route `/oauth/google/callback`
+- `Operations`：创建账号、OAuth 应用、实例、代理和任务
+- `Reports`：查看 `site_daily` 和 `account_daily`
+- `OAuth callback`：在前端路由 `/oauth/google/callback` 中完成 Google 授权回调
 
-For the smoothest local OAuth experience, set the OAuth app redirect URI to the frontend callback URL, for example:
+如果你想让本地 OAuth 流程更顺，建议把 OAuth 应用回调地址设为前端回调 URL，例如：
 
 ```text
 http://127.0.0.1:4173/oauth/google/callback
 ```
 
-The frontend callback page will then call the backend `/api/v1/oauth/google/callback` endpoint for the token exchange and show a human-readable result screen.
+这样前端回调页会再去调用 backend 的 `/api/v1/oauth/google/callback` 完成 token 交换，并展示更友好的结果页。
 
-The fastest way to validate the backend/collector path is still:
+当前最快的 backend/collector 路径验证方式仍然是：
 
 ```bash
 python scripts/virtual_flow.py
 ```
 
-The frontend is there to replace raw operator API calls for the common manual workflow, not to replace the terminal demo script yet.
+前端的作用是替代常见的手工 operator API 调用，不是为了替代当前终端里的 demo 脚本。

@@ -1,98 +1,98 @@
-# AdX VPS PHP Trigger Architecture Design
+# AdX VPS PHP 触发式架构设计
 
-## Summary
+## 概述
 
-This design defines the first production-style deployment of the AdX data pull flow outside the current local control-plane demo. The target shape is:
+这份设计定义了当前 AdX 拉数链路的第一版生产化部署形态，目标结构如下：
 
-- Cloudflare provides DNS, HTTPS, and reverse-proxy ingress
-- A VPS hosts the real execution stack
-- A public PHP endpoint acts as the trigger entrypoint
-- A local Python HTTP service performs AdX data pulls
-- MySQL stores account config, fetch runs, proxy bindings, and normalized report rows
+- Cloudflare 负责 DNS、HTTPS 和反向代理入口
+- VPS 承载真实执行栈
+- 公网 PHP 入口负责触发任务
+- 本机 Python HTTP 服务负责拉取 AdX 数据
+- MySQL 存储账号配置、拉取运行记录、代理绑定和归一化报表数据
 
-The first release is intentionally minimal:
+第一版特意保持最小化：
 
-- single-account execution is sufficient
-- synchronous trigger -> synchronous fetch -> synchronous response
-- the existing Python AdX SOAP module is reused
-- proxy-per-account is not required on day one, but the interface and schema are reserved now
+- 先支持单账号执行即可
+- 采用同步触发 -> 同步拉取 -> 同步返回结果
+- 复用现有已经跑通的 Python AdX SOAP 模块
+- 第一版不要求按账号走不同代理，但现在就预留好接口和表结构
 
-## Goals
+## 目标
 
-- Reuse the existing working Python AdX fetch module in a VPS deployment
-- Allow a public PHP script to trigger one report pull by account and date
-- Persist normalized site-level AdX rows into a VPS-local database
-- Return a clear success or failure result to the trigger caller
-- Preserve an upgrade path to multi-account fixed-proxy execution later
+- 复用当前已经跑通的 Python AdX 拉数模块，并部署到 VPS
+- 支持通过一个公网 PHP 脚本按账号和日期触发一次报表拉取
+- 将归一化后的站点级 AdX 数据写入 VPS 本地数据库
+- 给触发方返回清晰的成功/失败结果
+- 为后续“多账号 + 固定代理/IP”执行模型保留升级路径
 
-## Non-Goals
+## 非目标
 
-- Rebuild the current local control-plane stack on the VPS
-- Support concurrent multi-account scheduling in the first release
-- Expose read APIs for the middle platform in the first release
-- Implement queue-based or async workers in the first release
-- Implement account-specific proxy routing in the first release
+- 不把当前本地 control-plane 整套搬到 VPS
+- 第一版不支持多账号并发调度
+- 第一版不对中台开放读接口
+- 第一版不做基于队列的异步 worker
+- 第一版不真正落地账号级代理路由
 
-## Architecture
+## 架构
 
-### External ingress
+### 外部入口层
 
-Cloudflare is ingress only. It terminates HTTPS, proxies traffic, and routes subdomains to the VPS origin. It does not run the AdX fetch logic.
+Cloudflare 只负责入口，不负责拉数逻辑。它终止 HTTPS、代理请求，并把不同子域名路由到 VPS 源站。
 
-### Public trigger layer
+### 公网触发层
 
-A PHP script on the VPS exposes a public trigger endpoint such as:
+VPS 上提供一个 PHP 脚本作为公网触发入口，例如：
 
 - `https://api.example.com/ke/fetch.php?account_key=a1&report_date=2026-06-03`
 
-Responsibilities:
+职责：
 
-- validate request parameters
-- apply simple request authentication
-- assign a request id
-- call the local Python HTTP service
-- return a JSON result to the caller
+- 校验请求参数
+- 做简单请求鉴权
+- 生成请求 id
+- 调用本机 Python HTTP 服务
+- 将 JSON 结果返回给调用方
 
-The PHP layer must stay thin. It is not responsible for OAuth token exchange, SOAP calls, CSV parsing, proxy selection logic, or result normalization.
+PHP 必须保持很薄。它不负责 OAuth 换 token、SOAP 调用、CSV 解析、代理选择或结果归一化。
 
-### Python execution layer
+### Python 执行层
 
-A local Python service runs on the VPS and listens on loopback only, for example:
+VPS 上运行一个仅监听回环地址的本机 Python 服务，例如：
 
 - `http://127.0.0.1:9100/internal/fetch`
 
-Responsibilities:
+职责：
 
-- load account configuration
-- load proxy binding configuration
-- choose connection strategy for the account
-- call the existing `AdxReportService`
-- normalize and store rows
-- persist execution status to the fetch-runs table
-- return a machine-readable result to the PHP caller
+- 加载账号配置
+- 加载代理绑定配置
+- 为该账号选择连接策略
+- 调用现有 `AdxReportService`
+- 归一化并保存结果行
+- 持久化执行状态到拉取运行表
+- 将机器可读结果返回给 PHP
 
-This service is the execution core and the future extension point for account-specific proxy routing and middle-platform read APIs.
+这层是执行核心，也是未来接入账号级固定代理和中台读接口的扩展点。
 
-### Data storage layer
+### 数据存储层
 
-MySQL on the VPS stores:
+VPS 本地的 MySQL 存储：
 
-- AdX account credentials and metadata
-- optional account-to-proxy bindings
-- fetch execution records
-- normalized site-level AdX rows
+- AdX 账号凭据与元数据
+- 可选的账号代理绑定
+- 拉取执行记录
+- 归一化后的站点级 AdX 行数据
 
-### Future read layer
+### 未来读取层
 
-A future read API will expose stored results to the middle platform. It is intentionally deferred, but the storage model and execution model are designed so this can be added without refactoring the fetch path.
+后续会再补一个读接口，让中台读取已经落库的结果。这个能力先延期，但当前的存储和执行模型已经为它做好准备，不需要重构拉数路径。
 
-## Data model
+## 数据模型
 
 ### `adx_accounts`
 
-Stores per-account AdX API configuration.
+用于存储每个 AdX 账号的 API 配置。
 
-Recommended fields:
+建议字段：
 
 - `id`
 - `account_key`
@@ -107,9 +107,9 @@ Recommended fields:
 
 ### `adx_account_proxies`
 
-Stores the optional per-account proxy binding. This is an extension point for the later fixed-IP model.
+用于存储账号级代理绑定。这是后续“固定 IP 拉数”模型的扩展点。
 
-Recommended fields:
+建议字段：
 
 - `id`
 - `account_id`
@@ -123,13 +123,13 @@ Recommended fields:
 - `created_at`
 - `updated_at`
 
-The first release may leave this table empty or store one default proxy. The Python execution layer must still be written against this interface so account-specific routing can be added later without changing callers.
+第一版可以让这张表为空，或者只放一条默认代理记录。但 Python 执行层从现在开始就要围绕这层接口写，后面才能无痛升级到账号级代理。
 
 ### `adx_fetch_runs`
 
-Stores one row per fetch attempt.
+用于记录每一次拉数尝试。
 
-Recommended fields:
+建议字段：
 
 - `id`
 - `account_id`
@@ -142,13 +142,13 @@ Recommended fields:
 - `finished_at`
 - `error_message`
 
-This table is the primary operational audit trail.
+这张表是后续排错和运维的核心审计表。
 
 ### `adx_site_daily_reports`
 
-Stores normalized site-level AdX rows returned by the current working report definition.
+用于存储当前已验证可用的站点级 AdX 日报数据。
 
-Recommended fields:
+建议字段：
 
 - `id`
 - `account_id`
@@ -162,34 +162,34 @@ Recommended fields:
 - `fetch_run_id`
 - `created_at`
 
-Recommended uniqueness constraint:
+建议唯一约束：
 
-- unique on `account_id, report_date, site_name`
+- `account_id, report_date, site_name`
 
-That allows safe delete-and-replace or upsert behavior for reruns.
+这样可以支持按日重跑时安全地“删旧写新”或 upsert。
 
-## Interfaces
+## 接口设计
 
-### Public PHP trigger endpoint
+### 公网 PHP 触发接口
 
-Example:
+示例：
 
 - `GET /ke/fetch.php?account_key=a1&report_date=2026-06-03&token=...`
 
-Input:
+输入：
 
 - `account_key`
 - `report_date`
-- trigger auth token or signature
+- 触发鉴权 token 或签名
 
-Behavior:
+行为：
 
-- validate input
-- generate `request_id`
-- call the local Python API
-- return JSON
+- 校验输入
+- 生成 `request_id`
+- 调本机 Python API
+- 返回 JSON
 
-Example success response:
+成功响应示例：
 
 ```json
 {
@@ -203,7 +203,7 @@ Example success response:
 }
 ```
 
-Example error response:
+失败响应示例：
 
 ```json
 {
@@ -214,13 +214,13 @@ Example error response:
 }
 ```
 
-### Local Python fetch endpoint
+### 本机 Python 拉数接口
 
-Example:
+示例：
 
 - `POST /internal/fetch`
 
-Input JSON:
+输入 JSON：
 
 ```json
 {
@@ -231,7 +231,7 @@ Input JSON:
 }
 ```
 
-Output JSON:
+输出 JSON：
 
 ```json
 {
@@ -244,177 +244,174 @@ Output JSON:
 }
 ```
 
-This endpoint is loopback-only and must not be exposed publicly.
+这个接口只允许本机访问，不能对公网暴露。
 
-## Runtime flow
+## 运行流程
 
-1. A caller hits the public PHP trigger endpoint.
-2. PHP validates the request and generates a `request_id`.
-3. PHP calls the local Python fetch endpoint.
-4. Python loads the target account from `adx_accounts`.
-5. Python loads any active proxy config from `adx_account_proxies`.
-6. Python inserts a `running` row into `adx_fetch_runs`.
-7. Python executes the existing `AdxReportService` site-level SOAP fetch.
-8. Python writes report rows into `adx_site_daily_reports`.
-9. Python updates the fetch run to `success` or `failed`.
-10. Python returns a structured result to PHP.
-11. PHP returns a structured result to the external caller.
+1. 调用方请求公网 PHP 触发接口。
+2. PHP 校验请求并生成 `request_id`。
+3. PHP 调用本机 Python 拉数接口。
+4. Python 从 `adx_accounts` 加载目标账号。
+5. Python 从 `adx_account_proxies` 读取代理配置。
+6. Python 在 `adx_fetch_runs` 中插入一条 `running` 记录。
+7. Python 执行现有 `AdxReportService` 的站点级 SOAP 拉数。
+8. Python 将报表行写入 `adx_site_daily_reports`。
+9. Python 将拉取运行状态更新为 `success` 或 `failed`。
+10. Python 返回结构化结果给 PHP。
+11. PHP 将结构化结果返回给外部调用方。
 
-## Report semantics
+## 报表语义
 
-The first release reuses the currently proven working report semantics:
+第一版复用当前已经验证可用的真实报表语义：
 
-- dimensions:
+- 维度：
   - `DATE_PT`
   - `SITE_NAME`
-- metrics:
+- 指标：
   - `AD_EXCHANGE_RESPONSES_SERVED`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE`
   - `AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM`
 
-The first release stores site-level rows, not URL-level rows. This is acceptable because the required business metrics are available and verified on the real account.
+第一版存的是站点级数据，不是 URL 级数据。这个是可接受的，因为你当前最关心的业务指标已经真实可拉到。
 
-Revenue and eCPM must continue to be normalized from micros before storage.
+`revenue` 和 `ecpm` 仍然必须在入库前按 micros 归一化。
 
-## Proxy extension design
+## 代理扩展设计
 
-The architecture explicitly reserves a proxy-selection boundary between the Python execution layer and outbound Google API calls.
+架构里已经明确保留了“代理选择层”，位于 Python 执行层和 Google API 出站请求之间。
 
-The Python service must depend on a small proxy-resolution abstraction with the following responsibilities:
+Python 服务依赖一个很小的代理解析抽象，它需要做到：
 
-- accept an account id or account key
-- return either:
-  - direct connection
-  - default shared proxy
-  - account-specific proxy configuration
+- 接收 `account_id` 或 `account_key`
+- 返回以下三种之一：
+  - 直连
+  - 默认共享代理
+  - 账号专属代理配置
 
-The first release may resolve to direct connection or one default proxy, but the Python fetch path must not hardcode this decision inline. The goal is to enable a later second phase where different AdX accounts always use different fixed outbound IPs without changing the public PHP trigger contract.
+第一版可以返回直连，或者一条默认代理。但 Python 拉数主路径里不能把这个决定写死在代码里。这样后面升级成“不同账号固定走不同 IP”时，不需要改公网 PHP 契约。
 
-## Error handling
+## 错误处理
 
-Errors are grouped into four operational categories.
+错误统一分成 4 类。
 
 ### `REQUEST_ERROR`
 
-Examples:
+示例：
 
-- missing `account_key`
-- invalid `report_date`
-- missing or invalid trigger token
+- 缺少 `account_key`
+- `report_date` 非法
+- 缺少或错误的触发 token
 
-Handled in PHP. Return HTTP 400 or 401.
+由 PHP 处理，返回 HTTP 400 或 401。
 
 ### `ACCOUNT_CONFIG_ERROR`
 
-Examples:
+示例：
 
-- unknown account
-- missing `network_code`
-- missing OAuth credentials
+- 账号不存在
+- 缺少 `network_code`
+- 缺少 OAuth 凭据
 
-Handled in Python. Return HTTP 422. Persist the failure in `adx_fetch_runs` when a run row already exists.
+由 Python 处理，返回 HTTP 422。如果运行记录已创建，需要把失败信息写入 `adx_fetch_runs`。
 
 ### `FETCH_ERROR`
 
-Examples:
+示例：
 
-- refresh token exchange failed
-- SOAP report failed
-- report download failed
-- proxy connection failed
+- refresh token 换取失败
+- SOAP 报表执行失败
+- 报表下载失败
+- 代理连接失败
 
-Handled in Python. Return HTTP 502 or 500. Persist detailed message in `adx_fetch_runs.error_message`.
+由 Python 处理，返回 HTTP 502 或 500，并把详细错误写入 `adx_fetch_runs.error_message`。
 
 ### `STORE_ERROR`
 
-Examples:
+示例：
 
-- database connection failure
-- row upsert failure
-- result persistence mismatch
+- 数据库连接失败
+- 行数据写入失败
+- 结果持久化异常
 
-Handled in Python. Return HTTP 500 and persist failure details.
+由 Python 处理，返回 HTTP 500，并持久化失败原因。
 
-## Deployment model
+## 部署模型
 
 ### Cloudflare
 
-- DNS and HTTPS
-- reverse proxy to the VPS origin
-- optional WAF/rate limiting later
+- 负责 DNS 和 HTTPS
+- 反向代理到 VPS 源站
+- 后续可选加 WAF / 限流
 
-### VPS services
+### VPS 服务
 
-- nginx or Apache for public PHP handling
-- PHP-FPM for `fetch.php`
-- MySQL for account config and report data
-- a supervised Python HTTP service bound to `127.0.0.1`
+- nginx 或 Apache 负责 PHP 公网入口
+- PHP-FPM 执行 `fetch.php`
+- MySQL 存储账号配置和报表数据
+- 一个由 `systemd` 或 `supervisor` 托管的本机 Python HTTP 服务，监听 `127.0.0.1`
 
-The Python process should be managed by `systemd` or `supervisor` so it survives restarts.
+## 安全要求
 
-## Security
+第一版最低要求：
 
-First release minimums:
+- Python API 只监听回环地址
+- 公网 PHP 入口必须要求 token 或签名
+- OAuth 密钥只保存在服务端
+- PHP 不能泄露 Google 原始凭据
+- 数据库日志和应用日志不能直接打出密钥
 
-- the Python API listens on loopback only
-- the public PHP endpoint requires a token or request signature
-- OAuth secrets are stored server-side only
-- PHP never exposes raw Google credentials
-- database and application logs must avoid dumping secrets
+## 分阶段上线
 
-## Phased rollout
+### 阶段 1：最小生产复刻
 
-### Phase 1: minimal production replication
+- 把 Python 拉数服务部署到 VPS
+- 接入 MySQL
+- 暴露 PHP 触发入口
+- 用一个账号、一天数据跑通端到端
 
-- deploy the Python fetch service to the VPS
-- connect it to MySQL
-- expose the PHP trigger endpoint
-- run one account and one date successfully end-to-end
+### 阶段 2：中台读取
 
-### Phase 2: middle-platform read access
+- 在已存储数据上增加读接口
+- 不改现有拉数路径
 
-- add a read endpoint over stored report data
-- keep the fetch path unchanged
+### 阶段 3：账号级固定 IP 执行
 
-### Phase 3: account-specific fixed-IP execution
+- 启用 `adx_account_proxies`
+- 实现按账号选代理
+- 可选增加出口 IP 校验与运维工具
 
-- activate `adx_account_proxies`
-- implement proxy resolution by account
-- optionally add egress verification and operational tooling
+## 测试策略
 
-## Testing strategy
+### 单元测试
 
-### Unit tests
+- Python API 请求校验
+- 账号查找与配置校验
+- 代理解析行为
+- 拉取运行记录与站点结果的持久化逻辑
+- 同账号同日期重跑的幂等行为
 
-- request validation for the Python API
-- account lookup and config validation
-- proxy resolution behavior
-- persistence logic for fetch runs and site rows
-- idempotent rerun behavior for the same account/date
+### 集成测试
 
-### Integration tests
+- PHP 入口调用 Python loopback API
+- Python API 写入 MySQL 表
+- VPS 环境下一次真实账号冒烟测试
 
-- PHP endpoint calling the Python loopback API
-- Python API storing rows into MySQL-backed tables
-- one real-account smoke test in the VPS environment
+### 运维验收标准
 
-### Operational verification
+第一版成功的标准是：
 
-Success for the first release means:
+- 公网 PHP 触发器返回成功 JSON
+- Python 拉取运行表里出现 `status=success`
+- `adx_site_daily_reports` 里出现目标日期的站点级数据
+- 同一天重跑不会产生逻辑重复行
 
-- public PHP trigger returns success JSON
-- Python fetch run is stored with `status=success`
-- `adx_site_daily_reports` contains the normalized site rows for the requested date
-- rerunning the same date does not create duplicate logical rows
+## 推荐实现顺序
 
-## Recommended implementation order
-
-1. Extract the current reusable Python module behind a VPS-oriented service boundary.
-2. Add MySQL persistence for accounts, fetch runs, and site rows.
-3. Add the local Python HTTP API.
-4. Add the thin PHP trigger endpoint.
-5. Deploy behind Cloudflare on the VPS.
-6. Add the proxy-resolution abstraction without turning on per-account routing yet.
-
+1. 先把当前可复用的 Python 模块抽成 VPS 导向的服务边界。
+2. 加上 MySQL 持久化层，覆盖账号、运行记录和站点级报表。
+3. 增加本机 Python HTTP API。
+4. 增加薄 PHP 触发器。
+5. 部署到 Cloudflare + VPS。
+6. 先只接代理抽象层，不立即打开账号级代理执行。
