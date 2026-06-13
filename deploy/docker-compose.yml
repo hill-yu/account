@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: adx_collector
+      POSTGRES_USER: adx
+      POSTGRES_PASSWORD: adx
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U adx -d adx_collector"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/backend/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ADX_COLLECTOR_APP_ENV: docker
+      ADX_COLLECTOR_DATABASE_URL: postgresql+psycopg://adx:adx@postgres:5432/adx_collector
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  collector-example:
+    build:
+      context: ..
+      dockerfile: deploy/collector/Dockerfile
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      CONTROL_PLANE_BASE_URL: http://backend:8000
+      COLLECTOR_INSTANCE_TOKEN: replace-after-creating-instance
+      COLLECTOR_EGRESS_CHECK_URL: https://api.ipify.org
+      COLLECTOR_REQUEST_TIMEOUT_SECONDS: "30"
+    restart: "no"
+
+volumes:
+  postgres-data:

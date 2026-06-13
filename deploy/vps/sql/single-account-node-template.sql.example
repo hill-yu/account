@@ -1,0 +1,73 @@
+-- 单账号固定代理执行节点 SQL 模板
+-- 使用前请替换所有占位符。
+
+USE adx_data;
+
+-- 1. 插入或更新账号
+-- 如果 account_key 已存在，建议先执行 UPDATE；
+-- 如果是全新节点，也可以直接 INSERT。
+
+INSERT INTO adx_accounts (
+  account_key,
+  account_name,
+  network_code,
+  client_id,
+  client_secret,
+  refresh_token,
+  status
+) VALUES (
+  'ACCOUNT_KEY',
+  'ACCOUNT_NAME',
+  'NETWORK_CODE',
+  'GOOGLE_CLIENT_ID',
+  'GOOGLE_CLIENT_SECRET',
+  'GOOGLE_REFRESH_TOKEN',
+  'active'
+);
+
+-- 2. 确认账号 ID
+SELECT id, account_key, account_name, network_code, status
+FROM adx_accounts
+WHERE account_key = 'ACCOUNT_KEY';
+
+-- 3. 清理旧代理绑定
+DELETE FROM adx_account_proxies
+WHERE account_id = (
+  SELECT id FROM adx_accounts WHERE account_key = 'ACCOUNT_KEY'
+);
+
+-- 4. 写入固定代理绑定
+INSERT INTO adx_account_proxies (
+  account_id,
+  proxy_type,
+  proxy_host,
+  proxy_port,
+  proxy_username,
+  proxy_password,
+  expected_egress_ip,
+  is_active
+) VALUES (
+  (SELECT id FROM adx_accounts WHERE account_key = 'ACCOUNT_KEY'),
+  'socks5',
+  'PROXY_HOST',
+  5001,
+  'PROXY_USERNAME',
+  'PROXY_PASSWORD',
+  'EXPECTED_EGRESS_IP',
+  1
+);
+
+-- 5. 验证当前绑定
+SELECT
+  p.id,
+  p.account_id,
+  p.proxy_type,
+  p.proxy_host,
+  p.proxy_port,
+  p.proxy_username,
+  p.expected_egress_ip,
+  p.is_active
+FROM adx_account_proxies p
+JOIN adx_accounts a ON a.id = p.account_id
+WHERE a.account_key = 'ACCOUNT_KEY';
+
