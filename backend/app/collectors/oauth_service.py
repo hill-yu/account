@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import json
 from secrets import token_urlsafe
 from urllib.parse import parse_qs, urlencode, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from fastapi import HTTPException, status
@@ -20,6 +21,8 @@ from app.collectors.oauth_errors import (
 )
 from app.config import get_settings
 from app.models.account import Account
+from app.models.collector_instance import CollectorInstance
+from app.models.collector_sync_task import CollectorSyncTask
 from app.models.oauth_app_config import OAuthAppConfig
 from app.models.oauth_credential import OAuthCredential
 from app.models.oauth_event import OAuthEvent
@@ -307,6 +310,19 @@ def _exchange_authorization_code(
     )
     db.add(staged)
 
+    instance = db.scalar(select(CollectorInstance).where(CollectorInstance.account_id == oauth_app.account_id))
+    if instance is not None:
+        db.add(
+            CollectorSyncTask(
+                account_id=oauth_app.account_id,
+                collector_instance_id=instance.id,
+                task_type="oauth_credential_validate",
+                report_date=now.date(),
+                status="pending",
+                external_request_id=f"oauth-validate-{oauth_app.id}-v{next_version}",
+            )
+        )
+
     oauth_app.authorization_status = "validation_pending"
     oauth_app.flow_status = "validation_pending"
     oauth_app.pending_credential_version = next_version
@@ -345,6 +361,114 @@ def _credential_cipher() -> CredentialCipher:
     return CredentialCipher(
         encryption_key=settings.credential_encryption_key,
         fingerprint_key=settings.credential_fingerprint_key,
+    )
+
+
+def acknowledge_credential_validation(
+    db: Session,
+    *,
+    instance: CollectorInstance,
+    payload: schemas.OAuthCredentialAckRequest,
+) -> schemas.OAuthCredentialAckResponse:
+    if payload.account_id != instance.account_id:
+        _raise_stale_credential_ack()
+    oauth_app = db.scalar(select(OAuthAppConfig).where(OAuthAppConfig.account_id == instance.account_id))
+    account = db.get(Account, instance.account_id)
+    task = db.get(CollectorSyncTask, payload.task_id)
+    if (
+        oauth_app is None
+        or account is None
+        or task is None
+        or task.account_id != instance.account_id
+        or task.collector_instance_id != instance.id
+        or task.task_type != "oauth_credential_validate"
+        or task.status != "in_progress"
+        or oauth_app.flow_status != "validation_pending"
+        or oauth_app.pending_credential_version != payload.credential_version
+        or account.external_account_id != payload.network_code
+    ):
+        _raise_stale_credential_ack()
+
+    service.assert_fetch_allowed(
+        db,
+        account_id=instance.account_id,
+        fetch_kind="oauth_credential_validate",
+        credential_version=payload.credential_version,
+    )
+    staged = db.scalar(
+        select(OAuthCredential).where(
+            OAuthCredential.oauth_app_id == oauth_app.id,
+            OAuthCredential.version == payload.credential_version,
+            OAuthCredential.status == "staged",
+        )
+    )
+    if staged is None or staged.token_fingerprint != payload.token_fingerprint:
+        _raise_stale_credential_ack()
+    try:
+        network_zone = ZoneInfo(payload.network_timezone)
+    except ZoneInfoNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "OAUTH_NETWORK_TIMEZONE_INVALID", "message": "Network timezone is invalid"},
+        ) from None
+
+    now = utcnow()
+    db.execute(
+        update(OAuthCredential)
+        .where(OAuthCredential.oauth_app_id == oauth_app.id, OAuthCredential.status == "active")
+        .values(status="retired", retired_at=now)
+    )
+    db.flush()
+    staged.status = "active"
+    staged.validated_at = now
+    staged.activated_at = now
+    staged.granted_scopes = payload.granted_scopes
+    oauth_app.active_credential_version = payload.credential_version
+    oauth_app.pending_credential_version = None
+    oauth_app.flow_status = "completed"
+    oauth_app.authorization_status = "authorized"
+    oauth_app.runtime_status = "degraded"
+    oauth_app.last_verified_at = now
+    oauth_app.failure_class = None
+    oauth_app.failure_count = 0
+    oauth_app.next_action = "run_oauth_health_check"
+    account.timezone = payload.network_timezone
+    task.status = "succeeded"
+    task.finished_at = now
+    health_report_date = datetime.now(network_zone).date() - timedelta(days=2)
+    health_task = CollectorSyncTask(
+        account_id=account.id,
+        collector_instance_id=instance.id,
+        task_type="oauth_health_check",
+        report_date=health_report_date,
+        status="pending",
+        external_request_id=f"oauth-health-{oauth_app.id}-v{payload.credential_version}",
+    )
+    db.add_all([staged, oauth_app, account, task, health_task])
+    _record_event(
+        db,
+        oauth_app=oauth_app,
+        event_type="credential_activated",
+        credential_version=payload.credential_version,
+    )
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(health_task)
+    return schemas.OAuthCredentialAckResponse(
+        account_id=account.id,
+        credential_version=payload.credential_version,
+        status="activated",
+        health_task_id=health_task.id,
+    )
+
+
+def _raise_stale_credential_ack() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={"code": "STALE_CREDENTIAL_ACK", "message": "Credential acknowledgement is stale or invalid"},
     )
 
 

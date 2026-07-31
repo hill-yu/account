@@ -48,7 +48,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy.types import Integer, Numeric
 
 from app.collectors import schemas
+from app.collectors.credential_crypto import CredentialCipher
 from app.collectors.fetch_policy import assert_fetch_allowed
+from app.config import get_settings
 from app.models.account import Account
 from app.models.account_daily_report import AccountDailyReport
 from app.models.account_hourly_report import AccountHourlyReport
@@ -58,6 +60,8 @@ from app.models.collector_sync_log import CollectorSyncLog
 from app.models.collector_sync_task import CollectorSyncTask
 from app.models.fetch_schedule import FetchSchedule
 from app.models.oauth_app_config import OAuthAppConfig
+from app.models.oauth_credential import OAuthCredential
+from app.models.oauth_event import OAuthEvent
 from app.models.proxy_binding import ProxyBinding
 from app.models.site_daily_report import SiteDailyReport
 from app.models.site_hourly_report import SiteHourlyReport
@@ -72,6 +76,19 @@ TERMINAL_TASK_STATUSES = {"succeeded", "failed", "cancelled"}
 
 # 活跃任务状态集合 — 还在进行中的任务
 ACTIVE_SYNC_TASK_STATUSES = {"pending", "in_progress"}
+SAFE_OAUTH_FAILURE_CLASSES = {
+    "oauth_code_invalid",
+    "oauth_refresh_revoked",
+    "oauth_session_expired",
+    "oauth_client_invalid",
+    "oauth_rate_limited",
+    "oauth_provider_unavailable",
+    "oauth_transport_timeout",
+    "oauth_transport_error",
+    "oauth_response_invalid",
+    "oauth_request_rejected",
+    "oauth_validation_failed",
+}
 
 # 默认报表时区（美国洛杉矶时区，即太平洋时间 PT）
 DEFAULT_REPORT_TIMEZONE = "America/Los_Angeles"
@@ -2295,6 +2312,48 @@ def build_runtime_config(
     oauth_app = db.scalar(select(OAuthAppConfig).where(OAuthAppConfig.account_id == instance.account_id))
     google_runtime = schemas.CollectorGoogleRuntimeCredentials(fetch_mode="stub")
 
+    validation_task = db.scalar(
+        select(CollectorSyncTask).where(
+            CollectorSyncTask.collector_instance_id == instance.id,
+            CollectorSyncTask.task_type == "oauth_credential_validate",
+            CollectorSyncTask.status.in_(ACTIVE_SYNC_TASK_STATUSES),
+        )
+    )
+    if oauth_app is not None and validation_task is not None and oauth_app.pending_credential_version is not None:
+        assert_fetch_allowed(
+            db,
+            account_id=instance.account_id,
+            fetch_kind="oauth_credential_validate",
+            credential_version=oauth_app.pending_credential_version,
+        )
+        staged = db.scalar(
+            select(OAuthCredential).where(
+                OAuthCredential.oauth_app_id == oauth_app.id,
+                OAuthCredential.version == oauth_app.pending_credential_version,
+                OAuthCredential.status == "staged",
+            )
+        )
+        account = db.get(Account, instance.account_id)
+        if staged is None or account is None or not account.external_account_id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Staged OAuth credential is not runnable")
+        settings = get_settings()
+        cipher = CredentialCipher(
+            encryption_key=settings.credential_encryption_key,
+            fingerprint_key=settings.credential_fingerprint_key,
+        )
+        google_runtime = schemas.CollectorGoogleRuntimeCredentials(
+            fetch_mode="admanager_soap",
+            operation="oauth_credential_validate",
+            credential_version=staged.version,
+            credential_fingerprint=staged.token_fingerprint,
+            granted_scopes=staged.granted_scopes,
+            admanager_network_code=account.external_account_id,
+            google_oauth_client_id=oauth_app.client_id,
+            google_oauth_client_secret=cipher.decrypt(staged.client_secret_ciphertext),
+            google_oauth_refresh_token=cipher.decrypt(staged.refresh_token_ciphertext),
+        )
+        oauth_app = None
+
     if oauth_app is not None:
         if (
             allow_stub_runtime_with_managed_credentials
@@ -2384,7 +2443,6 @@ def claim_next_task(db: Session, instance: CollectorInstance) -> CollectorSyncTa
     - 如果 UPDATE 影响 0 行（被其他进程抢先），返回 None
     - rollback 释放行锁
     """
-    assert_fetch_allowed(db, account_id=instance.account_id, fetch_kind="claim")
     claimed_at = utcnow()
 
     # 查询该实例所有 pending 任务
@@ -2399,12 +2457,34 @@ def claim_next_task(db: Session, instance: CollectorInstance) -> CollectorSyncTa
     if not pending_tasks:
         return None
 
-    # 优先小时报任务，选最新的
+    validation_tasks = [task for task in pending_tasks if task.task_type == "oauth_credential_validate"]
+    health_tasks = [task for task in pending_tasks if task.task_type == "oauth_health_check"]
+    # 优先凭据验证，其次健康检查，再处理小时报任务。
     hourly_tasks = [task for task in pending_tasks if task.task_type == "report_fetch_hourly"]
     next_task = (
-        max(hourly_tasks, key=lambda task: (task.report_date, task.created_at, task.id))
+        min(validation_tasks, key=lambda task: (task.created_at, task.id))
+        if validation_tasks
+        else min(health_tasks, key=lambda task: (task.created_at, task.id))
+        if health_tasks
+        else max(hourly_tasks, key=lambda task: (task.report_date, task.created_at, task.id))
         if hourly_tasks
         else min(pending_tasks, key=lambda task: (task.created_at, task.id))
+    )
+    oauth_app = db.scalar(select(OAuthAppConfig).where(OAuthAppConfig.account_id == instance.account_id))
+    if next_task.task_type == "oauth_credential_validate":
+        fetch_kind = "oauth_credential_validate"
+        credential_version = oauth_app.pending_credential_version if oauth_app is not None else None
+    elif next_task.task_type == "oauth_health_check":
+        fetch_kind = "oauth_health_check"
+        credential_version = oauth_app.active_credential_version if oauth_app is not None else None
+    else:
+        fetch_kind = "claim"
+        credential_version = oauth_app.active_credential_version if oauth_app is not None else None
+    assert_fetch_allowed(
+        db,
+        account_id=instance.account_id,
+        fetch_kind=fetch_kind,
+        credential_version=credential_version,
     )
 
     # 原子认领（CAS 操作）
@@ -2445,7 +2525,30 @@ def update_task_status(
     - 如果 started_at 为空且状态变为 in_progress，自动设置 started_at
     - 如果 payload 中有 message，自动写入 CollectorSyncLog
     """
-    assert_fetch_allowed(db, account_id=instance.account_id, fetch_kind="terminal_status")
+    task_before_update = db.scalar(
+        select(CollectorSyncTask).where(
+            CollectorSyncTask.id == task_id,
+            CollectorSyncTask.collector_instance_id == instance.id,
+        )
+    )
+    if task_before_update is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    oauth_app = db.scalar(select(OAuthAppConfig).where(OAuthAppConfig.account_id == instance.account_id))
+    if task_before_update.task_type == "oauth_credential_validate":
+        fetch_kind = "oauth_credential_validate"
+        credential_version = oauth_app.pending_credential_version if oauth_app is not None else None
+    elif task_before_update.task_type == "oauth_health_check":
+        fetch_kind = "oauth_health_check"
+        credential_version = oauth_app.active_credential_version if oauth_app is not None else None
+    else:
+        fetch_kind = "terminal_status"
+        credential_version = oauth_app.active_credential_version if oauth_app is not None else None
+    assert_fetch_allowed(
+        db,
+        account_id=instance.account_id,
+        fetch_kind=fetch_kind,
+        credential_version=credential_version,
+    )
     # 反向查询：当前允许的源状态
     source_statuses = allowed_source_statuses(payload.status)
     if not source_statuses:
@@ -2486,18 +2589,54 @@ def update_task_status(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invalid task status transition")
 
+    safe_message = payload.message
+    if updated_task.task_type in {"oauth_credential_validate", "oauth_health_check"}:
+        safe_message = _sanitize_oauth_task_message(payload.message)
     # 如果有消息，写入任务日志
-    if payload.message:
+    if safe_message:
         db.add(
             CollectorSyncLog(
                 task_id=updated_task.id,
                 account_id=updated_task.account_id,
                 collector_instance_id=instance.id,
                 level="error" if payload.status == "failed" else "info",
-                message=payload.message,
+                message=safe_message,
             )
         )
+
+    if updated_task.task_type == "oauth_credential_validate" and payload.status == "failed" and oauth_app is not None:
+        failed_version = oauth_app.pending_credential_version
+        if failed_version is not None:
+            db.execute(
+                update(OAuthCredential)
+                .where(
+                    OAuthCredential.oauth_app_id == oauth_app.id,
+                    OAuthCredential.version == failed_version,
+                    OAuthCredential.status == "staged",
+                )
+                .values(status="rejected", retired_at=utcnow())
+            )
+            oauth_app.pending_credential_version = None
+            oauth_app.flow_status = "validation_failed"
+            oauth_app.authorization_status = "authorization_failed"
+            oauth_app.failure_class = safe_message or "oauth_validation_failed"
+            oauth_app.failure_count += 1
+            oauth_app.next_action = "reauthorize"
+            db.add(
+                OAuthEvent(
+                    account_id=oauth_app.account_id,
+                    oauth_app_id=oauth_app.id,
+                    event_type="credential_validation_failed",
+                    credential_version=failed_version,
+                    failure_class=oauth_app.failure_class,
+                    metadata_json='{"flow_status":"validation_failed"}',
+                )
+            )
 
     commit_or_raise_conflict(db, "Unable to update task status")
     db.refresh(updated_task)
     return updated_task
+
+
+def _sanitize_oauth_task_message(message: str | None) -> str:
+    return message if message in SAFE_OAUTH_FAILURE_CLASSES else "oauth_validation_failed"

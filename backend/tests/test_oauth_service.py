@@ -10,10 +10,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import models as _models  # noqa: F401
-from app.collectors import oauth_service
+from app.collectors import oauth_service, service
 from app.collectors.credential_crypto import CredentialCipher
 from app.database import Base
 from app.models.account import Account
+from app.models.collector_account_policy import CollectorAccountPolicy
+from app.models.collector_instance import CollectorInstance
+from app.models.collector_sync_task import CollectorSyncTask
 from app.models.oauth_app_config import OAuthAppConfig
 from app.models.oauth_credential import OAuthCredential
 from app.models.oauth_event import OAuthEvent
@@ -59,6 +62,11 @@ class DummyResponse:
 
     def json(self) -> dict[str, object]:
         return self._payload
+
+
+def test_oauth_task_message_sanitizer_rejects_arbitrary_payload() -> None:
+    assert service._sanitize_oauth_task_message("oauth_refresh_revoked") == "oauth_refresh_revoked"
+    assert service._sanitize_oauth_task_message("secret-refresh-token") == "oauth_validation_failed"
 
 
 def create_account_with_oauth_app(db_session: Session) -> OAuthAppConfig:
@@ -432,6 +440,153 @@ def test_import_google_callback_payload_rejects_redirect_uri_mismatch(db_session
                 ),
             ),
         )
-
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "redirect_uri mismatch"
+
+
+def test_credential_ack_activates_exact_staged_version_and_creates_health_task(db_session: Session) -> None:
+    oauth_app = create_account_with_oauth_app(db_session)
+    account = db_session.get(Account, oauth_app.account_id)
+    assert account is not None
+    account.external_account_id = "network-123"
+    oauth_app.flow_status = "validation_pending"
+    oauth_app.authorization_status = "validation_pending"
+    oauth_app.runtime_status = "revoked"
+    oauth_app.active_credential_version = 1
+    oauth_app.pending_credential_version = 2
+    instance = CollectorInstance(
+        account_id=account.id,
+        name="credential-ack-node",
+        instance_token="credential-ack-token",
+        status="ready",
+    )
+    db_session.add_all(
+        [
+            instance,
+            CollectorAccountPolicy(account_id=account.id, lifecycle_status="active"),
+            OAuthCredential(
+                oauth_app_id=oauth_app.id,
+                version=1,
+                status="active",
+                client_secret_ciphertext="old-client",
+                refresh_token_ciphertext="old-refresh",
+                token_fingerprint="old-fingerprint",
+            ),
+            OAuthCredential(
+                oauth_app_id=oauth_app.id,
+                version=2,
+                status="staged",
+                client_secret_ciphertext="new-client",
+                refresh_token_ciphertext="new-refresh",
+                token_fingerprint="new-fingerprint",
+            ),
+        ]
+    )
+    db_session.flush()
+    validation_task = CollectorSyncTask(
+        account_id=account.id,
+        collector_instance_id=instance.id,
+        task_type="oauth_credential_validate",
+        report_date=datetime.utcnow().date(),
+        status="in_progress",
+        external_request_id="oauth-validate-test-v2",
+    )
+    db_session.add(validation_task)
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as bad_fingerprint:
+        oauth_service.acknowledge_credential_validation(
+            db_session,
+            instance=instance,
+            payload=oauth_service.schemas.OAuthCredentialAckRequest(
+                task_id=validation_task.id,
+                account_id=account.id,
+                credential_version=2,
+                token_fingerprint="wrong-fingerprint",
+                network_code="network-123",
+                network_timezone="America/New_York",
+                granted_scopes="https://www.googleapis.com/auth/admanager",
+            ),
+        )
+    assert bad_fingerprint.value.detail["code"] == "STALE_CREDENTIAL_ACK"
+    assert db_session.query(OAuthCredential).filter_by(oauth_app_id=oauth_app.id, version=2).one().status == "staged"
+
+    result = oauth_service.acknowledge_credential_validation(
+        db_session,
+        instance=instance,
+        payload=oauth_service.schemas.OAuthCredentialAckRequest(
+            task_id=validation_task.id,
+            account_id=account.id,
+            credential_version=2,
+            token_fingerprint="new-fingerprint",
+            network_code="network-123",
+            network_timezone="America/New_York",
+            granted_scopes="https://www.googleapis.com/auth/admanager",
+        ),
+    )
+
+    assert result.status == "activated"
+    db_session.refresh(oauth_app)
+    db_session.refresh(account)
+    assert oauth_app.active_credential_version == 2
+    assert oauth_app.pending_credential_version is None
+    assert oauth_app.runtime_status == "degraded"
+    assert oauth_app.flow_status == "completed"
+    assert account.timezone == "America/New_York"
+    assert db_session.query(OAuthCredential).filter_by(oauth_app_id=oauth_app.id, version=1).one().status == "retired"
+    assert db_session.query(OAuthCredential).filter_by(oauth_app_id=oauth_app.id, version=2).one().status == "active"
+    assert db_session.query(CollectorSyncTask).filter_by(task_type="oauth_health_check", status="pending").count() == 1
+
+    with pytest.raises(HTTPException) as exc_info:
+        oauth_service.acknowledge_credential_validation(
+            db_session,
+            instance=instance,
+            payload=oauth_service.schemas.OAuthCredentialAckRequest(
+                task_id=validation_task.id,
+                account_id=account.id,
+                credential_version=2,
+                token_fingerprint="new-fingerprint",
+                network_code="network-123",
+                network_timezone="America/New_York",
+                granted_scopes="https://www.googleapis.com/auth/admanager",
+            ),
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "STALE_CREDENTIAL_ACK"
+
+
+def test_callback_creates_validation_task_for_existing_instance(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    oauth_app = create_account_with_oauth_app(db_session)
+    instance = CollectorInstance(
+        account_id=oauth_app.account_id,
+        name="callback-validation-node",
+        instance_token="callback-validation-token",
+        status="ready",
+    )
+    db_session.add(instance)
+    db_session.commit()
+    pending = oauth_service.generate_authorization_url(db_session, oauth_app.id)
+    monkeypatch.setattr(
+        oauth_service.requests,
+        "post",
+        lambda *args, **kwargs: DummyResponse(
+            200,
+            {
+                "access_token": "memory-only-access-token",
+                "refresh_token": "staged-refresh-token",
+                "scope": "https://www.googleapis.com/auth/admanager",
+                "token_type": "Bearer",
+            },
+        ),
+    )
+
+    oauth_service.handle_google_callback(db_session, state=pending.state, code="one-time-code")
+
+    validation_task = db_session.query(CollectorSyncTask).filter_by(task_type="oauth_credential_validate").one()
+    assert validation_task.account_id == oauth_app.account_id
+    assert validation_task.collector_instance_id == instance.id
+    assert validation_task.status == "pending"
+    assert "memory-only-access-token" not in repr(validation_task.__dict__)

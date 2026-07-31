@@ -347,16 +347,22 @@ class AdManagerSoapClient:
             ),
         )
 
-    def fetch_network_timezone(self) -> str:
+    def fetch_current_network(self) -> dict[str, str]:
         network_service = self._build_ad_manager_client().GetService(
             "NetworkService",
             version=self._api_version,
         )
         network = network_service.getCurrentNetwork()
+        network_code = network.get("networkCode") if isinstance(network, dict) else getattr(network, "networkCode", None)
         timezone_name = network.get("timeZone") if isinstance(network, dict) else getattr(network, "timeZone", None)
+        if not isinstance(network_code, str) or not network_code.strip():
+            raise ValueError("Ad Manager current network did not include networkCode")
         if not isinstance(timezone_name, str) or not timezone_name.strip():
             raise ValueError("Ad Manager current network did not include timeZone")
-        return timezone_name.strip()
+        return {"network_code": network_code.strip(), "timezone": timezone_name.strip()}
+
+    def fetch_network_timezone(self) -> str:
+        return self.fetch_current_network()["timezone"]
 
     def _fetch_rows_with_definition(
         self,

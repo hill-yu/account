@@ -87,6 +87,23 @@ class OAuthCallbackResponse(BaseModel):
     refresh_token_present: bool
 
 
+class OAuthCredentialAckRequest(BaseModel):
+    task_id: int
+    account_id: int
+    credential_version: int
+    token_fingerprint: str
+    network_code: str
+    network_timezone: str
+    granted_scopes: str
+
+
+class OAuthCredentialAckResponse(BaseModel):
+    account_id: int
+    credential_version: int
+    status: Literal["activated"]
+    health_task_id: int
+
+
 class OAuthCallbackImportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -102,6 +119,10 @@ class OAuthCallbackImportRequest(BaseModel):
 
 class CollectorGoogleRuntimeCredentials(BaseModel):
     fetch_mode: Literal["stub", "admanager_rest", "admanager_soap"]
+    operation: Literal["fetch", "oauth_credential_validate", "oauth_health_check"] = "fetch"
+    credential_version: int | None = None
+    credential_fingerprint: str | None = None
+    granted_scopes: str | None = None
     admanager_network_code: str | None = None
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: str | None = None

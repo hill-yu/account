@@ -23,7 +23,12 @@ class RuntimeSettings:
     proxy_username: str | None
     proxy_password: str | None
     expected_egress_ip: str
+    account_id: int | None = None
     fetch_mode: Literal["stub", "admanager_rest", "admanager_soap"] = "stub"
+    operation: Literal["fetch", "oauth_credential_validate", "oauth_health_check"] = "fetch"
+    credential_version: int | None = None
+    credential_fingerprint: str | None = None
+    granted_scopes: str | None = None
     admanager_network_code: str | None = None
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: str | None = None
@@ -35,6 +40,10 @@ class RuntimeSettings:
 @dataclass(frozen=True)
 class CollectorGoogleRuntimeConfig:
     fetch_mode: Literal["stub", "admanager_rest", "admanager_soap"]
+    operation: Literal["fetch", "oauth_credential_validate", "oauth_health_check"] = "fetch"
+    credential_version: int | None = None
+    credential_fingerprint: str | None = None
+    granted_scopes: str | None = None
     admanager_network_code: str | None = None
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: str | None = None
@@ -73,6 +82,10 @@ class CollectorRuntimeConfig:
             request_timeout_seconds=payload["request_timeout_seconds"],
             google=CollectorGoogleRuntimeConfig(
                 fetch_mode=google_payload["fetch_mode"],
+                operation=google_payload.get("operation", "fetch"),
+                credential_version=google_payload.get("credential_version"),
+                credential_fingerprint=google_payload.get("credential_fingerprint"),
+                granted_scopes=google_payload.get("granted_scopes"),
                 admanager_network_code=google_payload.get("admanager_network_code"),
                 google_oauth_client_id=google_payload.get("google_oauth_client_id"),
                 google_oauth_client_secret=google_payload.get("google_oauth_client_secret"),
@@ -90,7 +103,12 @@ class CollectorRuntimeConfig:
             proxy_username=self.proxy_username,
             proxy_password=self.proxy_password,
             expected_egress_ip=self.expected_egress_ip,
+            account_id=self.account_id,
             fetch_mode=self.google.fetch_mode,
+            operation=getattr(self.google, "operation", "fetch"),
+            credential_version=getattr(self.google, "credential_version", None),
+            credential_fingerprint=getattr(self.google, "credential_fingerprint", None),
+            granted_scopes=getattr(self.google, "granted_scopes", None),
             admanager_network_code=self.google.admanager_network_code,
             google_oauth_client_id=self.google.google_oauth_client_id,
             google_oauth_client_secret=self.google.google_oauth_client_secret,

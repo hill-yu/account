@@ -367,6 +367,15 @@ def get_collector_runtime_config(
     )
 
 
+@router.post("/collector/oauth/credential-ack", response_model=schemas.OAuthCredentialAckResponse)
+def acknowledge_oauth_credential(
+    payload: schemas.OAuthCredentialAckRequest,
+    db: Session = Depends(get_db),
+    instance: CollectorInstance = Depends(get_authenticated_instance),
+) -> schemas.OAuthCredentialAckResponse:
+    return oauth_service.acknowledge_credential_validation(db, instance=instance, payload=payload)
+
+
 @router.get("/collector/tasks/next", response_model=schemas.SyncTaskRead)
 def get_next_task(
     db: Session = Depends(get_db),

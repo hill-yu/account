@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 import hashlib
 import json
@@ -8,7 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models import BootstrapSettings, CollectorRuntimeConfig, CollectorTask, FetchBatch, RuntimeSettings
+from app.models import BootstrapSettings, CollectorRuntimeConfig, CollectorTask, FetchBatch, RuntimeResult, RuntimeSettings
+from app.oauth_validation import OAuthValidationResult
 from app.config import SettingsError, load_bootstrap_settings, load_settings
 from app.fetcher import AdManagerRestReportFetcher, AdManagerSoapReportFetcher, StubFetcher
 from app.egress import EgressChecker
@@ -22,6 +23,7 @@ class FakeControlPlaneClient:
     batch_callbacks: list[tuple[int, FetchBatch]] = field(default_factory=list)
     status_callbacks: list[tuple[int, str, str | None]] = field(default_factory=list)
     next_task_calls: int = 0
+    credential_acks: list[tuple[int, OAuthValidationResult]] = field(default_factory=list)
 
     def heartbeat(self, *, status: str, observed_egress_ip: str) -> None:
         self.heartbeats.append((status, observed_egress_ip))
@@ -35,6 +37,9 @@ class FakeControlPlaneClient:
 
     def update_task_status(self, task_id: int, status: str, message: str | None = None) -> None:
         self.status_callbacks.append((task_id, status, message))
+
+    def acknowledge_oauth_credential(self, *, task_id: int, result: OAuthValidationResult) -> None:
+        self.credential_acks.append((task_id, result))
 
 
 @dataclass
@@ -55,6 +60,54 @@ class FakeFetcher:
     def fetch(self, task: CollectorTask) -> list[FetchBatch]:
         self.calls.append(task)
         return self.batches
+
+
+@dataclass
+class FakeOAuthValidator:
+    result: OAuthValidationResult
+    calls: int = 0
+
+    def validate(self) -> OAuthValidationResult:
+        self.calls += 1
+        return self.result
+
+
+def test_runtime_validates_staged_credential_and_acks_without_fetching_reports() -> None:
+    settings = build_settings()
+    task = CollectorTask(
+        id=19,
+        account_id=7,
+        collector_instance_id=3,
+        task_type="oauth_credential_validate",
+        report_date=date(2026, 7, 29),
+        status="in_progress",
+    )
+    client = FakeControlPlaneClient(next_task_result=task)
+    fetcher = FakeFetcher(batches=[])
+    validation_result = OAuthValidationResult(
+        account_id=7,
+        credential_version=2,
+        token_fingerprint="fingerprint-v2",
+        network_code="network-123",
+        network_timezone="America/Los_Angeles",
+        granted_scopes="https://www.googleapis.com/auth/admanager",
+    )
+    validator = FakeOAuthValidator(validation_result)
+    runtime = CollectorRuntime(
+        settings=settings,
+        control_plane_client=client,
+        egress_checker=FakeEgressChecker(settings.expected_egress_ip),
+        fetcher=fetcher,
+        oauth_validator=validator,
+    )
+
+    result = runtime.run_once()
+
+    assert result == RuntimeResult(outcome="succeeded", task_id=19)
+    assert validator.calls == 1
+    assert fetcher.calls == []
+    assert client.credential_acks == [(19, validation_result)]
+    assert client.status_callbacks == []
 
 
 def build_settings() -> RuntimeSettings:
@@ -590,7 +643,7 @@ def test_main_bootstrap_uses_env_settings_and_runtime_factory(monkeypatch) -> No
             google_oauth_refresh_token=None,
         ),
     )
-    settings = build_settings()
+    settings = replace(build_settings(), account_id=3)
     seen: dict[str, object] = {}
 
     class FakeRuntime:

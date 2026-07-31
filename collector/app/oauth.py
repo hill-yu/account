@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import requests
@@ -10,6 +11,13 @@ from app.oauth_errors import classify_oauth_error, oauth_contract_failure, oauth
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 
+@dataclass(frozen=True)
+class OAuthTokenResponse:
+    access_token: str
+    token_type: str | None
+    scope: str | None
+
+
 def refresh_access_token(
     *,
     client_id: str,
@@ -18,6 +26,23 @@ def refresh_access_token(
     timeout_seconds: int = 30,
     session: requests.Session | Any | None = None,
 ) -> str:
+    return refresh_access_token_metadata(
+        client_id=client_id,
+        client_secret=client_secret,
+        refresh_token=refresh_token,
+        timeout_seconds=timeout_seconds,
+        session=session,
+    ).access_token
+
+
+def refresh_access_token_metadata(
+    *,
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+    timeout_seconds: int = 30,
+    session: requests.Session | Any | None = None,
+) -> OAuthTokenResponse:
     http = session or requests.Session()
     transport_failure = None
     try:
@@ -56,4 +81,10 @@ def refresh_access_token(
     access_token = payload.get("access_token")
     if not isinstance(access_token, str) or not access_token:
         raise oauth_contract_failure(http_status=response.status_code)
-    return access_token
+    token_type = payload.get("token_type")
+    scope = payload.get("scope")
+    return OAuthTokenResponse(
+        access_token=access_token,
+        token_type=token_type if isinstance(token_type, str) else None,
+        scope=scope if isinstance(scope, str) else None,
+    )

@@ -5,6 +5,7 @@ from typing import Any
 import requests
 
 from app.models import CollectorRuntimeConfig, CollectorTask, FetchBatch
+from app.oauth_validation import OAuthValidationResult
 
 
 class ControlPlaneClient:
@@ -67,6 +68,24 @@ class ControlPlaneClient:
             f"{self._base_url}/api/v1/collector/tasks/{task_id}/status",
             headers=self._headers,
             json=payload,
+            timeout=self._timeout_seconds,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def acknowledge_oauth_credential(self, *, task_id: int, result: OAuthValidationResult) -> dict[str, Any]:
+        response = self._session.post(
+            f"{self._base_url}/api/v1/collector/oauth/credential-ack",
+            headers=self._headers,
+            json={
+                "task_id": task_id,
+                "account_id": result.account_id,
+                "credential_version": result.credential_version,
+                "token_fingerprint": result.token_fingerprint,
+                "network_code": result.network_code,
+                "network_timezone": result.network_timezone,
+                "granted_scopes": result.granted_scopes,
+            },
             timeout=self._timeout_seconds,
         )
         response.raise_for_status()

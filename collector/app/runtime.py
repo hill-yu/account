@@ -4,6 +4,8 @@ from app.control_plane_client import ControlPlaneClient
 from app.egress import EgressChecker
 from app.fetcher import Fetcher, build_fetcher
 from app.models import RuntimeResult, RuntimeSettings
+from app.oauth_validation import OAuthCredentialValidator
+from app.oauth_errors import OAuthFailure
 from app.proxy import ProxyConfig
 
 
@@ -15,11 +17,13 @@ class CollectorRuntime:
         control_plane_client: ControlPlaneClient,
         egress_checker: EgressChecker,
         fetcher: Fetcher,
+        oauth_validator: OAuthCredentialValidator | None = None,
     ) -> None:
         self.settings = settings
         self.control_plane_client = control_plane_client
         self.egress_checker = egress_checker
         self.fetcher = fetcher
+        self.oauth_validator = oauth_validator
         self.proxy_config = ProxyConfig(
             protocol=settings.proxy_protocol,
             host=settings.proxy_host,
@@ -59,6 +63,11 @@ class CollectorRuntime:
             control_plane_client=control_plane_client,
             egress_checker=egress_checker,
             fetcher=fetcher or build_fetcher(settings),
+            oauth_validator=(
+                OAuthCredentialValidator(settings=settings, account_id=settings.account_id)
+                if settings.operation == "oauth_credential_validate"
+                else None
+            ),
         )
 
     def run_once(self) -> RuntimeResult:
@@ -74,6 +83,12 @@ class CollectorRuntime:
             return RuntimeResult(outcome="idle")
 
         try:
+            if task.task_type == "oauth_credential_validate":
+                if self.oauth_validator is None:
+                    raise RuntimeError("OAuth credential validator is not configured")
+                validation = self.oauth_validator.validate()
+                self.control_plane_client.acknowledge_oauth_credential(task_id=task.id, result=validation)
+                return RuntimeResult(outcome="succeeded", task_id=task.id)
             batches = list(self.fetcher.fetch(task))
             for batch in batches:
                 self.control_plane_client.submit_batch(task.id, batch)
@@ -84,5 +99,6 @@ class CollectorRuntime:
             )
             return RuntimeResult(outcome="succeeded", task_id=task.id)
         except Exception as exc:
-            self.control_plane_client.update_task_status(task.id, "failed", str(exc))
+            message = exc.failure_class if isinstance(exc, OAuthFailure) else "collector_task_failed"
+            self.control_plane_client.update_task_status(task.id, "failed", message)
             raise
