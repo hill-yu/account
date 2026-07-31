@@ -80,6 +80,25 @@ class OAuthAppList(BaseModel):
     items: list[OAuthAppRead]
 
 
+class OAuthAccountLag(BaseModel):
+    account_id: int
+    account_name: str
+    timezone: str
+    latest_hourly_watermark_utc: datetime | None
+    hourly_watermark_lag_hours: float | None
+    latest_authoritative_report_date: date | None
+    authoritative_daily_lag_hours: float
+
+
+class OAuthHealthSummary(BaseModel):
+    generated_at: datetime
+    oauth_runtime_status_accounts: dict[str, int]
+    oauth_refresh_failure_total: dict[str, int]
+    oauth_credential_version_mismatch_total: int
+    revoked_account_task_created_total: int
+    account_lags: list[OAuthAccountLag]
+
+
 class AuthorizationUrlResponse(BaseModel):
     authorization_url: str
     state: str

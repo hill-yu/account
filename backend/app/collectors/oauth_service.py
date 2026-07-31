@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import json
 from secrets import token_urlsafe
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -21,6 +21,7 @@ from app.collectors.oauth_errors import (
 )
 from app.config import get_settings
 from app.models.account import Account
+from app.models.account_hourly_report import AccountHourlyReport
 from app.models.collector_instance import CollectorInstance
 from app.models.collector_sync_task import CollectorSyncTask
 from app.models.oauth_app_config import OAuthAppConfig
@@ -62,6 +63,133 @@ def list_oauth_apps(db: Session) -> list[schemas.OAuthAppRead]:
         )
         items.append(item)
     return items
+
+
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=ZoneInfo("UTC"))
+    return value.astimezone(ZoneInfo("UTC"))
+
+
+def _latest_mature_report_date(*, now: datetime, timezone_name: str) -> date:
+    candidate = now.astimezone(ZoneInfo(timezone_name)).date()
+    while not service.is_authoritative_daily_ready(
+        report_date=candidate,
+        timezone_name=timezone_name,
+        now=now,
+    ):
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def get_oauth_health_summary(db: Session) -> schemas.OAuthHealthSummary:
+    """Build OAuth health metrics exclusively from control-plane tables."""
+    now = _aware_utc(utcnow())
+    runtime_counts = {
+        str(runtime_status): int(account_count)
+        for runtime_status, account_count in db.execute(
+            select(OAuthAppConfig.runtime_status, func.count(OAuthAppConfig.id))
+            .group_by(OAuthAppConfig.runtime_status)
+            .order_by(OAuthAppConfig.runtime_status)
+        )
+    }
+    failure_counts = {
+        str(failure_class): int(failure_count or 0)
+        for failure_class, failure_count in db.execute(
+            select(OAuthAppConfig.failure_class, func.sum(OAuthAppConfig.failure_count))
+            .where(OAuthAppConfig.failure_class.is_not(None))
+            .group_by(OAuthAppConfig.failure_class)
+            .order_by(OAuthAppConfig.failure_class)
+        )
+    }
+    oauth_apps = list(db.scalars(select(OAuthAppConfig).order_by(OAuthAppConfig.account_id)))
+    credentials = list(db.scalars(select(OAuthCredential)))
+    credential_keys = {
+        (credential.oauth_app_id, credential.version, credential.status)
+        for credential in credentials
+    }
+    version_mismatch_total = sum(
+        1
+        for oauth_app in oauth_apps
+        if (
+            oauth_app.active_credential_version is not None
+            and (oauth_app.id, oauth_app.active_credential_version, "active") not in credential_keys
+        )
+        or (
+            oauth_app.pending_credential_version is not None
+            and (oauth_app.id, oauth_app.pending_credential_version, "staged") not in credential_keys
+        )
+    )
+
+    revoked_task_violations = 0
+    for oauth_app in oauth_apps:
+        if oauth_app.runtime_status != "revoked" or oauth_app.revoked_at is None:
+            continue
+        revoked_task_violations += int(
+            db.scalar(
+                select(func.count(CollectorSyncTask.id)).where(
+                    CollectorSyncTask.account_id == oauth_app.account_id,
+                    CollectorSyncTask.task_type.in_(("report_fetch", "report_fetch_hourly")),
+                    CollectorSyncTask.created_at >= oauth_app.revoked_at,
+                )
+            )
+            or 0
+        )
+
+    account_lags: list[schemas.OAuthAccountLag] = []
+    accounts = list(
+        db.scalars(
+            select(Account)
+            .join(OAuthAppConfig, OAuthAppConfig.account_id == Account.id)
+            .order_by(Account.id)
+        )
+    )
+    for account in accounts:
+        latest_hourly = db.scalar(
+            select(func.max(AccountHourlyReport.report_time_utc)).where(
+                AccountHourlyReport.account_id == account.id
+            )
+        )
+        hourly_lag = None
+        if latest_hourly is not None:
+            hourly_lag = round(max(0.0, (now - _aware_utc(latest_hourly)).total_seconds() / 3600), 2)
+        latest_authoritative = db.scalar(
+            select(func.max(CollectorSyncTask.report_date)).where(
+                CollectorSyncTask.account_id == account.id,
+                CollectorSyncTask.task_type == "report_fetch",
+                CollectorSyncTask.status == "succeeded",
+            )
+        )
+        timezone_name = account.timezone or service.DEFAULT_REPORT_TIMEZONE
+        latest_mature = _latest_mature_report_date(now=now, timezone_name=timezone_name)
+        if latest_authoritative is not None and latest_authoritative >= latest_mature:
+            daily_lag = 0.0
+        else:
+            first_missing = latest_authoritative + timedelta(days=1) if latest_authoritative else latest_mature
+            ready_at = service.authoritative_daily_ready_at(
+                report_date=first_missing,
+                timezone_name=timezone_name,
+            )
+            daily_lag = round(max(0.0, (now - ready_at).total_seconds() / 3600), 2)
+        account_lags.append(
+            schemas.OAuthAccountLag(
+                account_id=account.id,
+                account_name=account.name,
+                timezone=timezone_name,
+                latest_hourly_watermark_utc=latest_hourly,
+                hourly_watermark_lag_hours=hourly_lag,
+                latest_authoritative_report_date=latest_authoritative,
+                authoritative_daily_lag_hours=daily_lag,
+            )
+        )
+    return schemas.OAuthHealthSummary(
+        generated_at=now,
+        oauth_runtime_status_accounts=runtime_counts,
+        oauth_refresh_failure_total=failure_counts,
+        oauth_credential_version_mismatch_total=version_mismatch_total,
+        revoked_account_task_created_total=revoked_task_violations,
+        account_lags=account_lags,
+    )
 
 
 def create_oauth_app(db: Session, payload: schemas.OAuthAppCreate) -> OAuthAppConfig:

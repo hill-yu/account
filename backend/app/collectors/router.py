@@ -52,6 +52,11 @@ def list_oauth_apps(db: Session = Depends(get_db)) -> schemas.OAuthAppList:
     return schemas.OAuthAppList(items=oauth_service.list_oauth_apps(db))
 
 
+@router.get("/operator/oauth/health-summary", response_model=schemas.OAuthHealthSummary)
+def get_oauth_health_summary(db: Session = Depends(get_db)) -> schemas.OAuthHealthSummary:
+    return oauth_service.get_oauth_health_summary(db)
+
+
 @router.post("/operator/oauth-apps/{oauth_app_id}/authorization-url", response_model=schemas.AuthorizationUrlResponse)
 def generate_oauth_authorization_url(
     oauth_app_id: int,
