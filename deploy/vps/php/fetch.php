@@ -7,6 +7,7 @@ $token = $_GET['token'] ?? '';
 $accountKey = $_GET['account_key'] ?? '';
 $reportDate = $_GET['report_date'] ?? '';
 $expectedToken = getenv('ADX_TRIGGER_TOKEN') ?: '';
+$fetchApiBaseUrl = rtrim(getenv('ADX_FETCH_API_BASE_URL') ?: 'http://127.0.0.1:9100', '/');
 
 if ($expectedToken === '' || !hash_equals($expectedToken, $token)) {
     http_response_code(401);
@@ -68,7 +69,7 @@ if ($payload === false) {
     exit;
 }
 
-$ch = curl_init('http://127.0.0.1:9100/internal/fetch');
+$ch = curl_init($fetchApiBaseUrl . '/internal/fetch');
 if ($ch === false) {
     http_response_code(500);
     echo json_encode([
@@ -85,7 +86,7 @@ curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
     CURLOPT_POSTFIELDS => $payload,
-    CURLOPT_TIMEOUT => 120,
+    CURLOPT_TIMEOUT => 15,
 ]);
 
 $body = curl_exec($ch);

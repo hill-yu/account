@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.tmp/
+backend/control_plane.db
+backend/*.db
+collector/*.db

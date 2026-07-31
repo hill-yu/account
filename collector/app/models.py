@@ -108,6 +108,7 @@ class CollectorTask:
     task_type: str
     report_date: date
     status: str
+    run_reason: str = "preview"
     external_request_id: str | None = None
 
     @classmethod
@@ -120,6 +121,7 @@ class CollectorTask:
             account_id=payload["account_id"],
             collector_instance_id=payload["collector_instance_id"],
             task_type=payload["task_type"],
+            run_reason=payload.get("run_reason", "preview"),
             report_date=report_date,
             status=payload["status"],
             external_request_id=payload.get("external_request_id"),
@@ -132,6 +134,9 @@ class FetchBatch:
     row_count: int
     payload_hash: str | None = None
     schema_version: str | None = None
+    merge_mode: str | None = None
+    touched_hours: list[int] | None = None
+    expected_hour_count: int | None = None
     rows: list[dict[str, Any]] | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -140,6 +145,9 @@ class FetchBatch:
             "row_count": self.row_count,
             "payload_hash": self.payload_hash,
             "schema_version": self.schema_version,
+            "merge_mode": self.merge_mode,
+            "touched_hours": self.touched_hours,
+            "expected_hour_count": self.expected_hour_count,
             "rows": self.rows,
         }
 

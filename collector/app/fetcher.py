@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 import hashlib
 import json
-from typing import Protocol
+from typing import Callable, Protocol
+from zoneinfo import ZoneInfo
 
 import requests
 
 from app.admanager_api import AdManagerApiClient
-from app.adx_report_service import AdxApiCredentials, AdxReportService
+from app.adx_report_service import AdxApiCredentials, AdxHourlyReportRow, AdxReportService, _expected_hour_count_for_report_date
 from app.models import CollectorTask, FetchBatch
 from app.oauth import refresh_access_token
 from app.models import RuntimeSettings
+from app.proxy import ProxyConfig
+
+DEFAULT_SOURCE_TIMEZONE = "America/Los_Angeles"
 
 
 class Fetcher(Protocol):
@@ -110,7 +115,9 @@ class AdManagerSoapReportFetcher:
         client_id: str,
         client_secret: str,
         refresh_token: str,
+        proxy_config: ProxyConfig | None = None,
         service: AdxReportService | None = None,
+        now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self._service = service or AdxReportService(
             credentials=AdxApiCredentials(
@@ -118,10 +125,34 @@ class AdManagerSoapReportFetcher:
                 client_id=client_id,
                 client_secret=client_secret,
                 refresh_token=refresh_token,
-            )
+            ),
+            proxy_config=proxy_config,
         )
+        self._now_provider = now_provider or (lambda: datetime.now(UTC))
 
     def fetch(self, task: CollectorTask) -> Iterable[FetchBatch]:
+        if task.task_type == "report_fetch_hourly":
+            rows = self._service.fetch_site_hourly_report(report_date=task.report_date, task_id=task.id)
+            source_timezone = _resolve_source_timezone(rows)
+            expected_hour_count = _expected_hour_count_for_report_date(
+                report_date=task.report_date,
+                source_timezone=source_timezone,
+            )
+            touched_hours = _build_touched_hours(
+                task=task,
+                source_timezone=source_timezone,
+                expected_hour_count=expected_hour_count,
+                now=self._now_provider(),
+            )
+            batch = self._service.build_hourly_fetch_batch(
+                rows=rows,
+                merge_mode="replace_touched_hours",
+                touched_hours=touched_hours,
+                expected_hour_count=expected_hour_count,
+            )
+            if batch is None:
+                return ()
+            return (batch,)
         rows = self._service.fetch_site_daily_report(report_date=task.report_date, task_id=task.id)
         batch = self._service.build_fetch_batch(rows=rows)
         if batch is None:
@@ -146,6 +177,14 @@ def build_fetcher(settings: RuntimeSettings) -> Fetcher:
             client_id=_require_setting(settings.google_oauth_client_id, "google_oauth_client_id"),
             client_secret=_require_setting(settings.google_oauth_client_secret, "google_oauth_client_secret"),
             refresh_token=_require_setting(settings.google_oauth_refresh_token, "google_oauth_refresh_token"),
+            proxy_config=ProxyConfig(
+                protocol=settings.proxy_protocol,
+                host=settings.proxy_host,
+                port=settings.proxy_port,
+                username=settings.proxy_username,
+                password=settings.proxy_password,
+                expected_egress_ip=settings.expected_egress_ip,
+            ),
         )
     raise ValueError(f"Unsupported fetch mode: {settings.fetch_mode}")
 
@@ -154,6 +193,33 @@ def _hash_rows(rows: list[dict[str, object]]) -> str:
     return hashlib.sha256(
         json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _resolve_source_timezone(rows: list[AdxHourlyReportRow]) -> str:
+    if rows:
+        return rows[0].source_timezone
+    return DEFAULT_SOURCE_TIMEZONE
+
+
+def _build_touched_hours(
+    *,
+    task: CollectorTask,
+    source_timezone: str,
+    expected_hour_count: int,
+    now: datetime,
+) -> list[int]:
+    if task.run_reason in {"finalize", "repair"}:
+        return list(range(expected_hour_count))
+
+    localized_now = now.astimezone(ZoneInfo(source_timezone))
+    if task.report_date < localized_now.date():
+        return list(range(expected_hour_count))
+    if task.report_date > localized_now.date():
+        return []
+    completed_hours = max(localized_now.hour - 1, -1)
+    if completed_hours < 0:
+        return []
+    return list(range(completed_hours + 1))
 
 
 def _require_setting(value: str | None, field_name: str) -> str:

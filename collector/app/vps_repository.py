@@ -42,23 +42,96 @@ class VpsRepository:
             report_date=report_date,
             trigger_source=trigger_source,
             request_id=request_id,
-            status="running",
+            status="pending",
             row_count=0,
         )
         self._db.add(run)
         self._db.flush()
         return run
 
-    def get_running_fetch_run(self, *, account_id: int, report_date: date) -> AdxFetchRun | None:
+    def get_active_fetch_run(self, *, account_id: int, report_date: date) -> AdxFetchRun | None:
         return (
             self._db.query(AdxFetchRun)
             .filter(
                 AdxFetchRun.account_id == account_id,
                 AdxFetchRun.report_date == report_date,
-                AdxFetchRun.status == "running",
+                AdxFetchRun.status.in_(("pending", "running")),
             )
             .order_by(AdxFetchRun.id.desc())
             .first()
+        )
+
+    def get_latest_completed_fetch_run(self, *, account_id: int, report_date: date) -> AdxFetchRun | None:
+        return (
+            self._db.query(AdxFetchRun)
+            .filter(
+                AdxFetchRun.account_id == account_id,
+                AdxFetchRun.report_date == report_date,
+                AdxFetchRun.status == "success",
+            )
+            .order_by(AdxFetchRun.id.desc())
+            .first()
+        )
+
+    def get_latest_fetch_run(self, *, account_id: int, report_date: date) -> AdxFetchRun | None:
+        return (
+            self._db.query(AdxFetchRun)
+            .filter(
+                AdxFetchRun.account_id == account_id,
+                AdxFetchRun.report_date == report_date,
+            )
+            .order_by(AdxFetchRun.id.desc())
+            .first()
+        )
+
+    def reset_failed_fetch_run(
+        self,
+        run: AdxFetchRun,
+        *,
+        trigger_source: str,
+        request_id: str,
+    ) -> AdxFetchRun:
+        run.trigger_source = trigger_source
+        run.request_id = request_id
+        run.status = "pending"
+        run.row_count = 0
+        run.started_at = datetime.now(UTC)
+        run.finished_at = None
+        run.error_message = None
+        self._db.flush()
+        return run
+
+    def get_next_pending_fetch_run(self) -> AdxFetchRun | None:
+        return (
+            self._db.query(AdxFetchRun)
+            .filter(AdxFetchRun.status == "pending")
+            .order_by(AdxFetchRun.id.asc())
+            .first()
+        )
+
+    def claim_fetch_run(self, *, run_id: int) -> AdxFetchRun | None:
+        run = (
+            self._db.query(AdxFetchRun)
+            .filter(AdxFetchRun.id == run_id, AdxFetchRun.status == "pending")
+            .with_for_update()
+            .one_or_none()
+        )
+        if run is None:
+            return None
+        run.status = "running"
+        run.error_message = None
+        self._db.flush()
+        return run
+
+    def list_site_rows(self, *, account_id: int, report_date: date) -> list[AdxSiteDailyReport]:
+        return (
+            self._db.query(AdxSiteDailyReport)
+            .filter(
+                AdxSiteDailyReport.account_id == account_id,
+                AdxSiteDailyReport.report_date == report_date,
+            )
+            .order_by(AdxSiteDailyReport.site_name.asc())
+            .all()
         )
 
     def replace_site_rows(

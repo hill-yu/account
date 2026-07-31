@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +17,9 @@ class VpsApiSettings(BaseSettings):
     bind_port: int = 9100
     database_url: str = f"sqlite:///{(BASE_DIR / 'vps_api.db').as_posix()}"
     sql_echo: bool = False
+    request_timeout_seconds: int = 30
+    egress_check_url: str = "https://api.ipify.org"
+    trigger_token: str = Field(default="", validation_alias="ADX_TRIGGER_TOKEN")
 
     model_config = SettingsConfigDict(
         env_prefix="ADX_VPS_",
