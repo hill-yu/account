@@ -62,8 +62,14 @@ class ControlPlaneClient:
         response.raise_for_status()
         return response.json()
 
-    def update_task_status(self, task_id: int, status: str, message: str | None = None) -> dict[str, Any]:
-        payload: dict[str, Any] = {"status": status, "message": message}
+    def update_task_status(
+        self,
+        task_id: int,
+        status: str,
+        message: str | None = None,
+        failure_class: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"status": status, "message": message, "failure_class": failure_class}
         response = self._session.post(
             f"{self._base_url}/api/v1/collector/tasks/{task_id}/status",
             headers=self._headers,

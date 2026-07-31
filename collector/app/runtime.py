@@ -99,6 +99,11 @@ class CollectorRuntime:
             )
             return RuntimeResult(outcome="succeeded", task_id=task.id)
         except Exception as exc:
-            message = exc.failure_class if isinstance(exc, OAuthFailure) else "collector_task_failed"
-            self.control_plane_client.update_task_status(task.id, "failed", message)
+            failure_class = exc.failure_class if isinstance(exc, OAuthFailure) else "collector_task_failed"
+            self.control_plane_client.update_task_status(
+                task.id,
+                "failed",
+                message=None,
+                failure_class=failure_class,
+            )
             raise

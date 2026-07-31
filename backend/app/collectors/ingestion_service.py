@@ -27,7 +27,6 @@ def ingest_batch(
     task_id: int,
     payload: schemas.BatchIngestionRequest,
 ) -> tuple[CollectorIngestionBatch, bool]:
-    service.assert_fetch_allowed(db, account_id=instance.account_id, fetch_kind="batch")
     task = db.scalar(
         select(CollectorSyncTask).where(
             CollectorSyncTask.id == task_id,
@@ -36,6 +35,11 @@ def ingest_batch(
     )
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    service.assert_fetch_allowed(
+        db,
+        account_id=instance.account_id,
+        fetch_kind="oauth_health_check" if task.task_type == "oauth_health_check" else "batch",
+    )
 
     payload_json = json.dumps(payload.rows, separators=(",", ":"), sort_keys=True) if payload.rows is not None else None
     is_first_batch_for_task = db.scalar(

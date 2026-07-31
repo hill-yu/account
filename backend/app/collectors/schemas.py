@@ -714,6 +714,7 @@ class CollectorRuntimeConfigResponse(BaseModel):
 class TaskStatusUpdate(BaseModel):
     status: Literal["in_progress", "succeeded", "failed", "cancelled", "blocked"]
     message: str | None = None
+    failure_class: str | None = None
 
 
 class BatchIngestionRequest(BaseModel):

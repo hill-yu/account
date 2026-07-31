@@ -10,6 +10,7 @@ import pytest
 
 from app.models import BootstrapSettings, CollectorRuntimeConfig, CollectorTask, FetchBatch, RuntimeResult, RuntimeSettings
 from app.oauth_validation import OAuthValidationResult
+from app.oauth_errors import OAuthFailure
 from app.config import SettingsError, load_bootstrap_settings, load_settings
 from app.fetcher import AdManagerRestReportFetcher, AdManagerSoapReportFetcher, StubFetcher
 from app.egress import EgressChecker
@@ -24,6 +25,7 @@ class FakeControlPlaneClient:
     status_callbacks: list[tuple[int, str, str | None]] = field(default_factory=list)
     next_task_calls: int = 0
     credential_acks: list[tuple[int, OAuthValidationResult]] = field(default_factory=list)
+    failure_classes: list[tuple[int, str | None]] = field(default_factory=list)
 
     def heartbeat(self, *, status: str, observed_egress_ip: str) -> None:
         self.heartbeats.append((status, observed_egress_ip))
@@ -35,8 +37,15 @@ class FakeControlPlaneClient:
     def submit_batch(self, task_id: int, batch: FetchBatch) -> None:
         self.batch_callbacks.append((task_id, batch))
 
-    def update_task_status(self, task_id: int, status: str, message: str | None = None) -> None:
+    def update_task_status(
+        self,
+        task_id: int,
+        status: str,
+        message: str | None = None,
+        failure_class: str | None = None,
+    ) -> None:
         self.status_callbacks.append((task_id, status, message))
+        self.failure_classes.append((task_id, failure_class))
 
     def acknowledge_oauth_credential(self, *, task_id: int, result: OAuthValidationResult) -> None:
         self.credential_acks.append((task_id, result))
@@ -108,6 +117,36 @@ def test_runtime_validates_staged_credential_and_acks_without_fetching_reports()
     assert fetcher.calls == []
     assert client.credential_acks == [(19, validation_result)]
     assert client.status_callbacks == []
+
+
+def test_runtime_reports_structured_oauth_failure_without_exception_text() -> None:
+    settings = build_settings()
+    task = CollectorTask(
+        id=20,
+        account_id=7,
+        collector_instance_id=3,
+        task_type="report_fetch_hourly",
+        report_date=date(2026, 7, 30),
+        status="in_progress",
+    )
+
+    class FailingFetcher:
+        def fetch(self, task):
+            raise OAuthFailure(failure_class="oauth_refresh_revoked", retryable=False, http_status=400)
+
+    client = FakeControlPlaneClient(next_task_result=task)
+    runtime = CollectorRuntime(
+        settings=settings,
+        control_plane_client=client,
+        egress_checker=FakeEgressChecker(settings.expected_egress_ip),
+        fetcher=FailingFetcher(),
+    )
+
+    with pytest.raises(OAuthFailure):
+        runtime.run_once()
+
+    assert client.status_callbacks == [(20, "failed", None)]
+    assert client.failure_classes == [(20, "oauth_refresh_revoked")]
 
 
 def build_settings() -> RuntimeSettings:

@@ -88,6 +88,7 @@ SAFE_OAUTH_FAILURE_CLASSES = {
     "oauth_response_invalid",
     "oauth_request_rejected",
     "oauth_validation_failed",
+    "oauth_health_check_succeeded",
 }
 
 # 默认报表时区（美国洛杉矶时区，即太平洋时间 PT）
@@ -2655,9 +2656,16 @@ def update_task_status(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invalid task status transition")
 
+    safe_failure_class = (
+        payload.failure_class
+        if payload.failure_class in SAFE_OAUTH_FAILURE_CLASSES | {"collector_task_failed"}
+        else None
+    )
     safe_message = payload.message
+    if payload.status == "failed":
+        safe_message = safe_failure_class or "collector_task_failed"
     if updated_task.task_type in {"oauth_credential_validate", "oauth_health_check"}:
-        safe_message = _sanitize_oauth_task_message(payload.message)
+        safe_message = _sanitize_oauth_task_message(safe_failure_class or payload.message)
     # 如果有消息，写入任务日志
     if safe_message:
         db.add(
@@ -2699,6 +2707,20 @@ def update_task_status(
                 )
             )
 
+    if oauth_app is not None and payload.status == "failed" and safe_failure_class == "oauth_refresh_revoked":
+        if updated_task.task_type == "oauth_health_check":
+            _open_oauth_circuit(db, oauth_app=oauth_app, account_id=instance.account_id)
+        elif updated_task.task_type in {"report_fetch", "report_fetch_hourly"}:
+            _request_oauth_revalidation(
+                db,
+                oauth_app=oauth_app,
+                instance=instance,
+                report_date=updated_task.report_date,
+            )
+
+    if oauth_app is not None and updated_task.task_type == "oauth_health_check" and payload.status == "succeeded":
+        _recover_oauth_after_health_check(db, oauth_app=oauth_app, account_id=instance.account_id)
+
     commit_or_raise_conflict(db, "Unable to update task status")
     db.refresh(updated_task)
     return updated_task
@@ -2706,3 +2728,164 @@ def update_task_status(
 
 def _sanitize_oauth_task_message(message: str | None) -> str:
     return message if message in SAFE_OAUTH_FAILURE_CLASSES else "oauth_validation_failed"
+
+
+def _request_oauth_revalidation(
+    db: Session,
+    *,
+    oauth_app: OAuthAppConfig,
+    instance: CollectorInstance,
+    report_date: date,
+) -> None:
+    oauth_app.failure_class = "oauth_refresh_revoked"
+    oauth_app.failure_count += 1
+    if oauth_app.runtime_status == "degraded":
+        return
+    oauth_app.runtime_status = "degraded"
+    oauth_app.next_action = "controlled_oauth_revalidation"
+    existing = db.scalar(
+        select(CollectorSyncTask).where(
+            CollectorSyncTask.account_id == instance.account_id,
+            CollectorSyncTask.task_type == "oauth_health_check",
+            CollectorSyncTask.status.in_(ACTIVE_SYNC_TASK_STATUSES),
+        )
+    )
+    if existing is None:
+        db.add(
+            CollectorSyncTask(
+                account_id=instance.account_id,
+                collector_instance_id=instance.id,
+                task_type="oauth_health_check",
+                report_date=report_date,
+                status="pending",
+                external_request_id=(
+                    f"oauth-revalidate-{oauth_app.id}-v{oauth_app.active_credential_version}-{token_urlsafe(6)}"
+                ),
+            )
+        )
+    db.add(
+        OAuthEvent(
+            account_id=instance.account_id,
+            oauth_app_id=oauth_app.id,
+            event_type="oauth_revalidation_requested",
+            credential_version=oauth_app.active_credential_version,
+            failure_class="oauth_refresh_revoked",
+            metadata_json='{"runtime_status":"degraded"}',
+        )
+    )
+
+
+def _open_oauth_circuit(db: Session, *, oauth_app: OAuthAppConfig, account_id: int) -> None:
+    policy = db.scalar(select(CollectorAccountPolicy).where(CollectorAccountPolicy.account_id == account_id))
+    if policy is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Collector account policy is missing")
+    oauth_app.failure_class = "oauth_refresh_revoked"
+    oauth_app.failure_count += 1
+    if oauth_app.runtime_status == "revoked":
+        return
+    if policy.resume_gray_enabled is None:
+        policy.resume_gray_enabled = policy.gray_enabled
+    if policy.resume_hourly_fetch_enabled is None:
+        policy.resume_hourly_fetch_enabled = policy.hourly_fetch_enabled
+    if policy.resume_authoritative_daily_enabled is None:
+        policy.resume_authoritative_daily_enabled = policy.authoritative_daily_enabled
+    policy.gray_enabled = False
+    policy.hourly_fetch_enabled = False
+    policy.authoritative_daily_enabled = False
+    policy.exclusion_reason = "invalid_grant"
+    policy.exclusion_note = "oauth_refresh_revoked"
+    policy.policy_version += 1
+    oauth_app.runtime_status = "revoked"
+    oauth_app.revoked_at = utcnow()
+    oauth_app.next_action = "reauthorize"
+    schedule = db.scalar(select(FetchSchedule).where(FetchSchedule.account_id == account_id))
+    if schedule is not None:
+        schedule.enabled = False
+        schedule.next_run_at = None
+        schedule.last_trigger_status = "blocked"
+        schedule.last_trigger_message = "oauth_refresh_revoked"
+    db.execute(
+        update(CollectorSyncTask)
+        .where(
+            CollectorSyncTask.account_id == account_id,
+            CollectorSyncTask.status == "pending",
+        )
+        .values(status="blocked", updated_at=utcnow())
+    )
+    db.add(
+        OAuthEvent(
+            account_id=account_id,
+            oauth_app_id=oauth_app.id,
+            event_type="oauth_circuit_opened",
+            credential_version=oauth_app.active_credential_version,
+            failure_class="oauth_refresh_revoked",
+            metadata_json='{"runtime_status":"revoked"}',
+        )
+    )
+
+
+def _recover_oauth_after_health_check(db: Session, *, oauth_app: OAuthAppConfig, account_id: int) -> None:
+    policy = db.scalar(select(CollectorAccountPolicy).where(CollectorAccountPolicy.account_id == account_id))
+    if policy is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Collector account policy is missing")
+    oauth_app.runtime_status = "healthy"
+    oauth_app.failure_class = None
+    oauth_app.failure_count = 0
+    oauth_app.last_verified_at = utcnow()
+    oauth_app.revoked_at = None
+    oauth_app.next_action = None
+    if policy.exclusion_reason == "invalid_grant":
+        policy.exclusion_reason = None
+        policy.exclusion_note = None
+        policy.gray_enabled = bool(policy.resume_gray_enabled)
+        policy.hourly_fetch_enabled = bool(policy.resume_hourly_fetch_enabled)
+        policy.authoritative_daily_enabled = bool(policy.resume_authoritative_daily_enabled)
+        policy.resume_gray_enabled = None
+        policy.resume_hourly_fetch_enabled = None
+        policy.resume_authoritative_daily_enabled = None
+        policy.policy_version += 1
+    schedule = db.scalar(select(FetchSchedule).where(FetchSchedule.account_id == account_id))
+    if schedule is not None and policy.gray_enabled and policy.hourly_fetch_enabled:
+        now = utcnow()
+        schedule.enabled = True
+        schedule.mode = "interval_hours"
+        schedule.daily_times_json = None
+        schedule.interval_hours = 4
+        schedule.next_run_at = now + timedelta(minutes=5 + (account_id * 17) % 50)
+        schedule.last_trigger_status = "recovered"
+        schedule.last_trigger_message = "oauth_health_check_succeeded"
+        account = db.get(Account, account_id)
+        instance = db.scalar(select(CollectorInstance).where(CollectorInstance.account_id == account_id))
+        if account is not None and instance is not None:
+            latest_local_date = datetime.now(ZoneInfo(account.timezone or DEFAULT_REPORT_TIMEZONE)).date()
+            if _find_active_hourly_sync_task(db, account_id=account_id, report_date=latest_local_date) is None:
+                db.add(
+                    CollectorSyncTask(
+                        account_id=account_id,
+                        collector_instance_id=instance.id,
+                        task_type="report_fetch_hourly",
+                        report_date=latest_local_date,
+                        status="pending",
+                        external_request_id=(
+                            f"oauth-gap-hourly-{account_id}-{latest_local_date.isoformat()}-{token_urlsafe(6)}"
+                        ),
+                    )
+                )
+    db.add_all(
+        [
+            OAuthEvent(
+                account_id=account_id,
+                oauth_app_id=oauth_app.id,
+                event_type="oauth_health_recovered",
+                credential_version=oauth_app.active_credential_version,
+                metadata_json='{"runtime_status":"healthy"}',
+            ),
+            OAuthEvent(
+                account_id=account_id,
+                oauth_app_id=oauth_app.id,
+                event_type="oauth_gap_scan_requested",
+                credential_version=oauth_app.active_credential_version,
+                metadata_json='{"reason":"oauth_recovered"}',
+            ),
+        ]
+    )
