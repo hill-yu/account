@@ -111,6 +111,22 @@ def test_healthy_account_with_matching_active_version_is_allowed(policy_db: tupl
     assert policy.hourly_fetch_enabled is True
 
 
+def test_health_check_allows_migrated_unknown_active_credential(policy_db: tuple[Session, int]) -> None:
+    db, account_id = policy_db
+    oauth_app = db.query(OAuthAppConfig).filter_by(account_id=account_id).one()
+    oauth_app.runtime_status = "unknown"
+    db.commit()
+
+    policy = assert_fetch_allowed(
+        db,
+        account_id=account_id,
+        fetch_kind="oauth_health_check",
+        credential_version=1,
+    )
+
+    assert policy.account_id == account_id
+
+
 def test_manual_exclusion_is_never_bypassed_by_healthy_oauth(policy_db: tuple[Session, int]) -> None:
     db, account_id = policy_db
     policy = db.query(CollectorAccountPolicy).filter_by(account_id=account_id).one()

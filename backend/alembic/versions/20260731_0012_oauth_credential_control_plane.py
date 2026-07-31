@@ -32,45 +32,46 @@ def upgrade() -> None:
         )
         batch_op.add_column(sa.Column("next_action", sa.String(length=128), nullable=True))
 
-    op.create_table(
-        "oauth_credentials",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("oauth_app_id", sa.Integer(), nullable=False),
-        sa.Column("version", sa.Integer(), nullable=False),
-        sa.Column("status", sa.String(length=32), nullable=False),
-        sa.Column("client_secret_ciphertext", sa.Text(), nullable=False),
-        sa.Column("refresh_token_ciphertext", sa.Text(), nullable=False),
-        sa.Column("token_fingerprint", sa.String(length=128), nullable=False),
-        sa.Column("granted_scopes", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("validated_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("activated_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("retired_at", sa.DateTime(timezone=True), nullable=True),
-        sa.CheckConstraint(
-            "status IN ('staged', 'active', 'retired', 'rejected', 'revoked')",
-            name="ck_oauth_credentials_status",
-        ),
-        sa.ForeignKeyConstraint(["oauth_app_id"], ["oauth_app_configs.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("oauth_app_id", "version", name="uq_oauth_credentials_app_version"),
-    )
-    op.create_index("ix_oauth_credentials_oauth_app_id", "oauth_credentials", ["oauth_app_id"], unique=False)
-    op.create_index(
-        "uq_oauth_credentials_one_active_per_app",
-        "oauth_credentials",
-        ["oauth_app_id"],
-        unique=True,
-        sqlite_where=sa.text("status = 'active'"),
-        postgresql_where=sa.text("status = 'active'"),
-    )
-    op.create_index(
-        "uq_oauth_credentials_one_staged_per_app",
-        "oauth_credentials",
-        ["oauth_app_id"],
-        unique=True,
-        sqlite_where=sa.text("status = 'staged'"),
-        postgresql_where=sa.text("status = 'staged'"),
-    )
+    if not sa.inspect(op.get_bind()).has_table("oauth_credentials"):
+        op.create_table(
+            "oauth_credentials",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("oauth_app_id", sa.Integer(), nullable=False),
+            sa.Column("version", sa.Integer(), nullable=False),
+            sa.Column("status", sa.String(length=32), nullable=False),
+            sa.Column("client_secret_ciphertext", sa.Text(), nullable=False),
+            sa.Column("refresh_token_ciphertext", sa.Text(), nullable=True),
+            sa.Column("token_fingerprint", sa.String(length=128), nullable=True),
+            sa.Column("granted_scopes", sa.Text(), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("validated_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("activated_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("retired_at", sa.DateTime(timezone=True), nullable=True),
+            sa.CheckConstraint(
+                "status IN ('staged', 'active', 'retired', 'rejected', 'revoked')",
+                name="ck_oauth_credentials_status",
+            ),
+            sa.ForeignKeyConstraint(["oauth_app_id"], ["oauth_app_configs.id"]),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("oauth_app_id", "version", name="uq_oauth_credentials_app_version"),
+        )
+        op.create_index("ix_oauth_credentials_oauth_app_id", "oauth_credentials", ["oauth_app_id"], unique=False)
+        op.create_index(
+            "uq_oauth_credentials_one_active_per_app",
+            "oauth_credentials",
+            ["oauth_app_id"],
+            unique=True,
+            sqlite_where=sa.text("status = 'active'"),
+            postgresql_where=sa.text("status = 'active'"),
+        )
+        op.create_index(
+            "uq_oauth_credentials_one_staged_per_app",
+            "oauth_credentials",
+            ["oauth_app_id"],
+            unique=True,
+            sqlite_where=sa.text("status = 'staged'"),
+            postgresql_where=sa.text("status = 'staged'"),
+        )
 
     op.create_table(
         "collector_account_policies",
@@ -119,18 +120,48 @@ def upgrade() -> None:
     op.create_index("ix_oauth_events_account_id", "oauth_events", ["account_id"], unique=False)
     op.create_index("ix_oauth_events_oauth_app_id", "oauth_events", ["oauth_app_id"], unique=False)
     op.create_index("ix_oauth_events_event_type", "oauth_events", ["event_type"], unique=False)
+    op.execute(
+        "UPDATE collector_sync_tasks SET status = 'blocked' "
+        "WHERE task_type = 'oauth_health_check' AND status IN ('pending', 'in_progress') "
+        "AND id NOT IN ("
+        "SELECT MIN(id) FROM collector_sync_tasks "
+        "WHERE task_type = 'oauth_health_check' AND status IN ('pending', 'in_progress') GROUP BY account_id"
+        ")"
+    )
+    op.execute(
+        "UPDATE collector_sync_tasks SET status = 'blocked' "
+        "WHERE run_reason = 'oauth_recovery' AND status IN ('pending', 'in_progress') "
+        "AND id != (SELECT MIN(id) FROM collector_sync_tasks "
+        "WHERE run_reason = 'oauth_recovery' AND status IN ('pending', 'in_progress'))"
+    )
+    op.create_index(
+        "uq_collector_sync_tasks_active_oauth_health_account",
+        "collector_sync_tasks",
+        ["account_id"],
+        unique=True,
+        sqlite_where=sa.text("task_type = 'oauth_health_check' AND status IN ('pending', 'in_progress')"),
+        postgresql_where=sa.text("task_type = 'oauth_health_check' AND status IN ('pending', 'in_progress')"),
+    )
+    op.create_index(
+        "uq_collector_sync_tasks_one_active_oauth_recovery",
+        "collector_sync_tasks",
+        ["run_reason"],
+        unique=True,
+        sqlite_where=sa.text("run_reason = 'oauth_recovery' AND status IN ('pending', 'in_progress')"),
+        postgresql_where=sa.text("run_reason = 'oauth_recovery' AND status IN ('pending', 'in_progress')"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("uq_collector_sync_tasks_one_active_oauth_recovery", table_name="collector_sync_tasks")
+    op.drop_index("uq_collector_sync_tasks_active_oauth_health_account", table_name="collector_sync_tasks")
     op.drop_index("ix_oauth_events_event_type", table_name="oauth_events")
     op.drop_index("ix_oauth_events_oauth_app_id", table_name="oauth_events")
     op.drop_index("ix_oauth_events_account_id", table_name="oauth_events")
     op.drop_table("oauth_events")
     op.drop_table("collector_account_policies")
-    op.drop_index("uq_oauth_credentials_one_staged_per_app", table_name="oauth_credentials")
-    op.drop_index("uq_oauth_credentials_one_active_per_app", table_name="oauth_credentials")
-    op.drop_index("ix_oauth_credentials_oauth_app_id", table_name="oauth_credentials")
-    op.drop_table("oauth_credentials")
+    # Encrypted credentials are intentionally retained as rollback escrow. The
+    # legacy schema must never become the only surviving copy of a refresh token.
 
     with op.batch_alter_table("oauth_app_configs", recreate="auto") as batch_op:
         batch_op.drop_column("next_action")

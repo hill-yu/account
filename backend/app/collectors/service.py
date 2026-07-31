@@ -78,7 +78,7 @@ TERMINAL_TASK_STATUSES = {"succeeded", "failed", "cancelled"}
 
 # 活跃任务状态集合 — 还在进行中的任务
 ACTIVE_SYNC_TASK_STATUSES = {"pending", "in_progress"}
-ACTIVE_RECOVERY_TASK_STATUSES = {"pending", "in_progress", "blocked"}
+ACTIVE_RECOVERY_TASK_STATUSES = {"pending", "in_progress"}
 SAFE_OAUTH_FAILURE_CLASSES = {
     "oauth_code_invalid",
     "oauth_refresh_revoked",
@@ -383,7 +383,7 @@ def scan_oauth_recovery_gaps(
     for account, instance, policy, _oauth_app in rows:
         timezone_name = account.timezone or DEFAULT_REPORT_TIMEZONE
         local_date = current_now.astimezone(ZoneInfo(timezone_name)).date()
-        candidate_dates = [local_date - timedelta(days=offset) for offset in range(lookback_days, -1, -1)]
+        candidate_dates = [local_date - timedelta(days=offset) for offset in range(0, lookback_days + 1)]
 
         if policy.hourly_fetch_enabled:
             for report_date in candidate_dates:
@@ -478,9 +478,19 @@ def enqueue_next_oauth_recovery_gap(
         status="pending",
         external_request_id=f"oauth-recovery-{gap.task_type}-{gap.account_id}-{gap.report_date.isoformat()}",
     )
-    db.add(task)
-    db.flush()
+    if not _add_unique_active_task(db, task):
+        return None
     return task
+
+
+def _add_unique_active_task(db: Session, task: CollectorSyncTask) -> bool:
+    try:
+        with db.begin_nested():
+            db.add(task)
+            db.flush()
+    except IntegrityError:
+        return False
+    return True
 
 
 def fail_stale_in_progress_tasks(
@@ -2625,25 +2635,9 @@ def build_runtime_config(
         oauth_app = None
 
     if oauth_app is not None:
-        # 校验 OAuth 授权状态
-        if oauth_app.authorization_status != "authorized" or not oauth_app.refresh_token:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="OAuth app is not authorized for runtime fetch",
-            )
-        # 校验 network code
-        account = db.get(Account, instance.account_id)
-        if account is None or account.external_account_id is None or account.external_account_id == "":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Account external_account_id must be set to the Ad Manager network code",
-            )
-        google_runtime = schemas.CollectorGoogleRuntimeCredentials(
-            fetch_mode="admanager_soap",
-            admanager_network_code=account.external_account_id,
-            google_oauth_client_id=oauth_app.client_id,
-            google_oauth_client_secret=oauth_app.client_secret,
-            google_oauth_refresh_token=oauth_app.refresh_token,
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Managed OAuth credential is required for runtime fetch",
         )
 
     return schemas.CollectorRuntimeConfigResponse(
@@ -2912,6 +2906,28 @@ def update_task_status(
                 report_date=updated_task.report_date,
             )
 
+    if oauth_app is not None and payload.status == "failed" and safe_failure_class == "oauth_session_expired":
+        _open_oauth_circuit(
+            db,
+            oauth_app=oauth_app,
+            account_id=instance.account_id,
+            failure_class="oauth_session_expired",
+            runtime_status="revoked",
+            exclusion_reason="invalid_grant",
+            next_action="reauthorize",
+        )
+
+    if oauth_app is not None and payload.status == "failed" and safe_failure_class == "oauth_client_invalid":
+        _open_oauth_circuit(
+            db,
+            oauth_app=oauth_app,
+            account_id=instance.account_id,
+            failure_class="oauth_client_invalid",
+            runtime_status="policy_blocked",
+            exclusion_reason="oauth_client_invalid",
+            next_action="fix_oauth_client_configuration",
+        )
+
     if oauth_app is not None and updated_task.task_type == "oauth_health_check" and payload.status == "succeeded":
         _recover_oauth_after_health_check(db, oauth_app=oauth_app, account_id=instance.account_id)
 
@@ -2945,7 +2961,8 @@ def _request_oauth_revalidation(
         )
     )
     if existing is None:
-        db.add(
+        _add_unique_active_task(
+            db,
             CollectorSyncTask(
                 account_id=instance.account_id,
                 collector_instance_id=instance.id,
@@ -2955,7 +2972,7 @@ def _request_oauth_revalidation(
                 external_request_id=(
                     f"oauth-revalidate-{oauth_app.id}-v{oauth_app.active_credential_version}-{token_urlsafe(6)}"
                 ),
-            )
+            ),
         )
     db.add(
         OAuthEvent(
@@ -2969,13 +2986,22 @@ def _request_oauth_revalidation(
     )
 
 
-def _open_oauth_circuit(db: Session, *, oauth_app: OAuthAppConfig, account_id: int) -> None:
+def _open_oauth_circuit(
+    db: Session,
+    *,
+    oauth_app: OAuthAppConfig,
+    account_id: int,
+    failure_class: str = "oauth_refresh_revoked",
+    runtime_status: str = "revoked",
+    exclusion_reason: str = "invalid_grant",
+    next_action: str = "reauthorize",
+) -> None:
     policy = db.scalar(select(CollectorAccountPolicy).where(CollectorAccountPolicy.account_id == account_id))
     if policy is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Collector account policy is missing")
-    oauth_app.failure_class = "oauth_refresh_revoked"
+    oauth_app.failure_class = failure_class
     oauth_app.failure_count += 1
-    if oauth_app.runtime_status == "revoked":
+    if oauth_app.runtime_status == runtime_status and policy.exclusion_reason == exclusion_reason:
         return
     if policy.resume_gray_enabled is None:
         policy.resume_gray_enabled = policy.gray_enabled
@@ -2986,18 +3012,18 @@ def _open_oauth_circuit(db: Session, *, oauth_app: OAuthAppConfig, account_id: i
     policy.gray_enabled = False
     policy.hourly_fetch_enabled = False
     policy.authoritative_daily_enabled = False
-    policy.exclusion_reason = "invalid_grant"
-    policy.exclusion_note = "oauth_refresh_revoked"
+    policy.exclusion_reason = exclusion_reason
+    policy.exclusion_note = failure_class
     policy.policy_version += 1
-    oauth_app.runtime_status = "revoked"
+    oauth_app.runtime_status = runtime_status
     oauth_app.revoked_at = utcnow()
-    oauth_app.next_action = "reauthorize"
+    oauth_app.next_action = next_action
     schedule = db.scalar(select(FetchSchedule).where(FetchSchedule.account_id == account_id))
     if schedule is not None:
         schedule.enabled = False
         schedule.next_run_at = None
         schedule.last_trigger_status = "blocked"
-        schedule.last_trigger_message = "oauth_refresh_revoked"
+        schedule.last_trigger_message = failure_class
     db.execute(
         update(CollectorSyncTask)
         .where(
@@ -3012,8 +3038,8 @@ def _open_oauth_circuit(db: Session, *, oauth_app: OAuthAppConfig, account_id: i
             oauth_app_id=oauth_app.id,
             event_type="oauth_circuit_opened",
             credential_version=oauth_app.active_credential_version,
-            failure_class="oauth_refresh_revoked",
-            metadata_json='{"runtime_status":"revoked"}',
+            failure_class=failure_class,
+            metadata_json=json.dumps({"runtime_status": runtime_status}, separators=(",", ":")),
         )
     )
 

@@ -8,9 +8,15 @@ from app.oauth_errors import OAuthFailure
 
 
 class FakeResponse:
-    def __init__(self, payload: dict[str, object], status_code: int = 200) -> None:
+    def __init__(
+        self,
+        payload: dict[str, object],
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self._payload = payload
         self.status_code = status_code
+        self.headers = headers or {}
 
     def json(self) -> dict[str, object]:
         return self._payload
@@ -36,6 +42,17 @@ class RaisingSession:
 
     def post(self, url: str, **kwargs):
         raise self.error
+
+
+class SequenceSession:
+    def __init__(self, responses: list[FakeResponse]) -> None:
+        self.responses = iter(responses)
+        self.calls = 0
+
+    def post(self, url: str, **kwargs):
+        del url, kwargs
+        self.calls += 1
+        return next(self.responses)
 
 
 def test_refresh_access_token_posts_expected_form_data() -> None:
@@ -104,6 +121,7 @@ def test_refresh_access_token_raises_structured_failure(
             client_secret="client-secret",
             refresh_token="secret-refresh-token",
             session=session,
+            max_attempts=1,
         )
 
     failure = exc_info.value
@@ -112,6 +130,50 @@ def test_refresh_access_token_raises_structured_failure(
     assert failure.http_status == status_code
     assert "secret-refresh-token" not in str(failure)
     assert "secret-refresh-token" not in repr(failure)
+
+
+def test_refresh_access_token_honors_retry_after_before_success() -> None:
+    session = SequenceSession(
+        [
+            FakeResponse({"error": "rate_limit"}, status_code=429, headers={"Retry-After": "2"}),
+            FakeResponse({"access_token": "recovered-access-token"}),
+        ]
+    )
+    waits: list[float] = []
+
+    access_token = refresh_access_token(
+        client_id="client-id",
+        client_secret="client-secret",
+        refresh_token="refresh-token",
+        session=session,
+        sleep=waits.append,
+        max_attempts=3,
+    )
+
+    assert access_token == "recovered-access-token"
+    assert session.calls == 2
+    assert waits == [2.0]
+
+
+def test_refresh_access_token_bounds_provider_retries() -> None:
+    session = SequenceSession(
+        [FakeResponse({"error": "temporarily_unavailable"}, status_code=503) for _ in range(3)]
+    )
+    waits: list[float] = []
+
+    with pytest.raises(OAuthFailure) as exc_info:
+        refresh_access_token(
+            client_id="client-id",
+            client_secret="client-secret",
+            refresh_token="refresh-token",
+            session=session,
+            sleep=waits.append,
+            max_attempts=3,
+        )
+
+    assert exc_info.value.failure_class == "oauth_provider_unavailable"
+    assert session.calls == 3
+    assert waits == [1.0, 2.0]
 
 
 def test_refresh_access_token_classifies_timeout_without_leaking_exception() -> None:

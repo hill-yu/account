@@ -93,7 +93,7 @@ def _assert_health_check_allowed(
 ) -> None:
     if policy.lifecycle_status != "active" or policy.exclusion_reason not in {None, "invalid_grant"}:
         _deny("FETCH_POLICY_EXCLUDED")
-    if oauth_app.runtime_status not in {"degraded", "revoked"} or oauth_app.active_credential_version is None:
+    if oauth_app.runtime_status not in {"unknown", "degraded", "revoked"} or oauth_app.active_credential_version is None:
         _deny("FETCH_HEALTH_CHECK_NOT_ALLOWED")
     _assert_credential(
         db,

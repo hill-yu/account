@@ -168,6 +168,22 @@ def test_missing_hourly_gap_is_prioritized_before_mature_authoritative_daily(ses
         ]
 
 
+def test_latest_hourly_gap_is_recovered_before_older_hourly_gap(session_factory) -> None:
+    now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+    with session_factory() as db:
+        account, _ = _seed_recovery_account(db, name="latest-first", daily_enabled=False)
+        _mark_current_watermark(db, account.id, datetime(2026, 7, 31, 11, 0, tzinfo=UTC))
+        db.commit()
+
+        gaps = service.scan_oauth_recovery_gaps(db, now=now, lookback_days=3)
+
+        assert [(gap.task_type, gap.report_date) for gap in gaps[:3]] == [
+            ("report_fetch_hourly", date(2026, 7, 30)),
+            ("report_fetch_hourly", date(2026, 7, 29)),
+            ("report_fetch_hourly", date(2026, 7, 28)),
+        ]
+
+
 def test_failed_recovery_gap_is_not_automatically_retried(session_factory) -> None:
     now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
     with session_factory() as db:

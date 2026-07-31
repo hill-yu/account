@@ -32,7 +32,7 @@ def _credential_report(
     return {
         "account_id": account_id,
         "version": version,
-        "fingerprint": fingerprint,
+        "fingerprint": fingerprint[:12] if fingerprint else None,
         "status": status,
     }
 

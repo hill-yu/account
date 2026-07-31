@@ -329,10 +329,11 @@ def list_mid_platform_site_hourly_report(
 def google_oauth_callback(
     state: str = Query(...),
     code: str = Query(...),
+    iss: str = Query(...),
     db: Session = Depends(get_db),
 ) -> schemas.OAuthCallbackResponse:
     try:
-        return oauth_service.handle_google_callback(db, state=state, code=code)
+        return oauth_service.handle_google_callback(db, state=state, code=code, issuer=iss)
     except oauth_service.OAuthStateError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

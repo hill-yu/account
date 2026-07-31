@@ -58,8 +58,9 @@ def list_oauth_apps(db: Session) -> list[schemas.OAuthAppRead]:
     for oauth_app in oauth_apps:
         visible_version = oauth_app.active_credential_version or oauth_app.pending_credential_version
         credential = credentials_by_version.get((oauth_app.id, visible_version)) if visible_version is not None else None
+        fingerprint = credential.token_fingerprint if credential is not None else None
         item = schemas.OAuthAppRead.model_validate(oauth_app).model_copy(
-            update={"credential_fingerprint": credential.token_fingerprint if credential is not None else None}
+            update={"credential_fingerprint": fingerprint[:12] if fingerprint else None}
         )
         items.append(item)
     return items
@@ -197,16 +198,29 @@ def create_oauth_app(db: Session, payload: schemas.OAuthAppCreate) -> OAuthAppCo
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
 
+    cipher = _credential_cipher()
     oauth_app = OAuthAppConfig(
         account_id=payload.account_id,
         client_id=payload.client_id,
-        client_secret=payload.client_secret,
+        client_secret="",
         redirect_uri=payload.redirect_uri,
         scopes=payload.scopes,
         app_status=payload.app_status,
         verification_status=payload.verification_status,
     )
     db.add(oauth_app)
+    db.flush()
+    oauth_app.pending_credential_version = 1
+    db.add(
+        OAuthCredential(
+            oauth_app_id=oauth_app.id,
+            version=1,
+            status="staged",
+            client_secret_ciphertext=cipher.encrypt(payload.client_secret),
+            refresh_token_ciphertext=None,
+            token_fingerprint=None,
+        )
+    )
     service.commit_or_raise_conflict(db, "OAuth app already exists for this account")
     db.refresh(oauth_app)
     return oauth_app
@@ -223,6 +237,8 @@ def generate_authorization_url(
 
     payload = payload or schemas.AuthorizationUrlRequest()
     requested_at = utcnow()
+    if oauth_app.flow_status in {"exchanging", "validation_pending"}:
+        _raise_oauth_conflict("OAUTH_FLOW_ALREADY_ACTIVE")
     if (
         oauth_app.authorization_state
         and oauth_app.authorization_state_expires_at is not None
@@ -240,6 +256,7 @@ def generate_authorization_url(
         update(OAuthAppConfig)
         .where(
             OAuthAppConfig.id == oauth_app.id,
+            OAuthAppConfig.flow_status.notin_(("exchanging", "validation_pending")),
             or_(
                 OAuthAppConfig.authorization_state.is_(None),
                 OAuthAppConfig.authorization_state_expires_at.is_(None),
@@ -302,21 +319,36 @@ def _resolve_oauth_client_secret(
 ) -> str:
     if oauth_app.client_secret:
         return oauth_app.client_secret
-    if oauth_app.active_credential_version is None:
-        _raise_oauth_conflict("OAUTH_CLIENT_SECRET_UNAVAILABLE")
-    active = db.scalar(
+    credential_version = oauth_app.active_credential_version or oauth_app.pending_credential_version
+    if credential_version is None:
+        latest = db.scalar(
+            select(OAuthCredential)
+            .where(OAuthCredential.oauth_app_id == oauth_app.id)
+            .order_by(OAuthCredential.version.desc())
+        )
+        if latest is None:
+            _raise_oauth_conflict("OAUTH_CLIENT_SECRET_UNAVAILABLE")
+        return cipher.decrypt(latest.client_secret_ciphertext)
+    credential = db.scalar(
         select(OAuthCredential).where(
             OAuthCredential.oauth_app_id == oauth_app.id,
-            OAuthCredential.version == oauth_app.active_credential_version,
-            OAuthCredential.status == "active",
+            OAuthCredential.version == credential_version,
+            OAuthCredential.status.in_(("active", "staged")),
         )
     )
-    if active is None:
+    if credential is None:
         _raise_oauth_conflict("OAUTH_CLIENT_SECRET_UNAVAILABLE")
-    return cipher.decrypt(active.client_secret_ciphertext)
+    return cipher.decrypt(credential.client_secret_ciphertext)
 
 
-def handle_google_callback(db: Session, state: str, code: str) -> schemas.OAuthCallbackResponse:
+def handle_google_callback(
+    db: Session,
+    state: str,
+    code: str,
+    issuer: str | None,
+) -> schemas.OAuthCallbackResponse:
+    if issuer != GOOGLE_OAUTH_ISSUER:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="issuer mismatch")
     oauth_app = _consume_pending_oauth_app_state(db, state=state)
     return _exchange_authorization_code(db, oauth_app=oauth_app, code=code)
 
@@ -329,7 +361,7 @@ def import_google_callback_payload(
 
     if payload.error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="callback returned error")
-    if payload.iss and payload.iss != GOOGLE_OAUTH_ISSUER:
+    if payload.iss != GOOGLE_OAUTH_ISSUER:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="issuer mismatch")
     if payload.redirect_uri.rstrip("/") != oauth_app.redirect_uri.rstrip("/"):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="redirect_uri mismatch")
@@ -377,6 +409,7 @@ def _consume_pending_oauth_app_state(db: Session, *, state: str) -> OAuthAppConf
             authorization_state=None,
             authorization_state_expires_at=None,
             authorization_code_received_at=now,
+            flow_status="exchanging",
         )
     )
     if consumed.rowcount != 1:
@@ -460,24 +493,36 @@ def _exchange_authorization_code(
             detail={"code": "OAUTH_REFRESH_TOKEN_MISSING", "message": "Google did not return a refresh token"},
         )
 
-    next_version = int(
-        db.scalar(select(func.max(OAuthCredential.version)).where(OAuthCredential.oauth_app_id == oauth_app.id)) or 0
-    ) + 1
-    db.execute(
-        update(OAuthCredential)
-        .where(OAuthCredential.oauth_app_id == oauth_app.id, OAuthCredential.status == "staged")
-        .values(status="rejected", retired_at=now)
+    staged = db.scalar(
+        select(OAuthCredential).where(
+            OAuthCredential.oauth_app_id == oauth_app.id,
+            OAuthCredential.status == "staged",
+        )
     )
-    staged = OAuthCredential(
-        oauth_app_id=oauth_app.id,
-        version=next_version,
-        status="staged",
-        client_secret_ciphertext=cipher.encrypt(client_secret),
-        refresh_token_ciphertext=cipher.encrypt(str(refresh_token)),
-        token_fingerprint=cipher.fingerprint(str(refresh_token)),
-        granted_scopes=str(token_payload.get("scope") or oauth_app.scopes),
-    )
-    db.add(staged)
+    if staged is not None and staged.refresh_token_ciphertext is None:
+        next_version = staged.version
+        staged.refresh_token_ciphertext = cipher.encrypt(str(refresh_token))
+        staged.token_fingerprint = cipher.fingerprint(str(refresh_token))
+        staged.granted_scopes = str(token_payload.get("scope") or oauth_app.scopes)
+    else:
+        next_version = int(
+            db.scalar(select(func.max(OAuthCredential.version)).where(OAuthCredential.oauth_app_id == oauth_app.id)) or 0
+        ) + 1
+        db.execute(
+            update(OAuthCredential)
+            .where(OAuthCredential.oauth_app_id == oauth_app.id, OAuthCredential.status == "staged")
+            .values(status="rejected", retired_at=now)
+        )
+        staged = OAuthCredential(
+            oauth_app_id=oauth_app.id,
+            version=next_version,
+            status="staged",
+            client_secret_ciphertext=cipher.encrypt(client_secret),
+            refresh_token_ciphertext=cipher.encrypt(str(refresh_token)),
+            token_fingerprint=cipher.fingerprint(str(refresh_token)),
+            granted_scopes=str(token_payload.get("scope") or oauth_app.scopes),
+        )
+        db.add(staged)
 
     instance = db.scalar(select(CollectorInstance).where(CollectorInstance.account_id == oauth_app.account_id))
     if instance is not None:

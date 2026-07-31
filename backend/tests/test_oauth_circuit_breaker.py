@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import models as _models  # noqa: F401
@@ -216,3 +218,86 @@ def test_health_recovery_does_not_clear_manual_stop(tmp_path: Path) -> None:
     assert policy.gray_enabled is False
     assert policy.hourly_fetch_enabled is False
     assert schedule.enabled is False
+
+
+@pytest.mark.parametrize(
+    ("failure_class", "expected_status", "expected_reason"),
+    [
+        ("oauth_session_expired", "revoked", "invalid_grant"),
+        ("oauth_client_invalid", "policy_blocked", "oauth_client_invalid"),
+    ],
+)
+def test_non_retryable_oauth_failures_open_circuit_without_repeating_tasks(
+    tmp_path: Path,
+    failure_class: str,
+    expected_status: str,
+    expected_reason: str,
+) -> None:
+    db = _session(tmp_path)
+    account, instance, oauth_app, policy, schedule = _seed_account(db)
+    failed_task = CollectorSyncTask(
+        account_id=account.id,
+        collector_instance_id=instance.id,
+        task_type="report_fetch_hourly",
+        report_date=date(2026, 7, 30),
+        status="in_progress",
+        external_request_id=f"failed-{failure_class}",
+    )
+    db.add(failed_task)
+    db.commit()
+
+    service.update_task_status(
+        db,
+        instance,
+        failed_task.id,
+        schemas.TaskStatusUpdate(status="failed", failure_class=failure_class),
+    )
+
+    db.refresh(oauth_app)
+    db.refresh(policy)
+    db.refresh(schedule)
+    assert oauth_app.runtime_status == expected_status
+    assert oauth_app.failure_class == failure_class
+    assert policy.exclusion_reason == expected_reason
+    assert schedule.enabled is False
+    assert db.query(CollectorSyncTask).filter_by(task_type="oauth_health_check", status="pending").count() == 0
+
+
+@pytest.mark.parametrize(
+    ("task_type", "run_reason"),
+    [
+        ("oauth_health_check", "automatic"),
+        ("report_fetch_hourly", "oauth_recovery"),
+    ],
+)
+def test_database_rejects_duplicate_active_oauth_control_tasks(
+    tmp_path: Path,
+    task_type: str,
+    run_reason: str,
+) -> None:
+    db = _session(tmp_path)
+    account, instance, _oauth_app, _policy, _schedule = _seed_account(db)
+    first = CollectorSyncTask(
+        account_id=account.id,
+        collector_instance_id=instance.id,
+        task_type=task_type,
+        run_reason=run_reason,
+        report_date=date(2026, 7, 29),
+        status="pending",
+        external_request_id=f"first-{task_type}-{run_reason}",
+    )
+    second = CollectorSyncTask(
+        account_id=account.id,
+        collector_instance_id=instance.id,
+        task_type=task_type,
+        run_reason=run_reason,
+        report_date=date(2026, 7, 30),
+        status="pending",
+        external_request_id=f"second-{task_type}-{run_reason}",
+    )
+    db.add(first)
+    db.commit()
+    db.add(second)
+
+    with pytest.raises(IntegrityError):
+        db.commit()

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+import time
+from typing import Any, Callable
 
 import requests
 
@@ -25,6 +26,8 @@ def refresh_access_token(
     refresh_token: str,
     timeout_seconds: int = 30,
     session: requests.Session | Any | None = None,
+    max_attempts: int = 3,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> str:
     return refresh_access_token_metadata(
         client_id=client_id,
@@ -32,6 +35,8 @@ def refresh_access_token(
         refresh_token=refresh_token,
         timeout_seconds=timeout_seconds,
         session=session,
+        max_attempts=max_attempts,
+        sleep=sleep,
     ).access_token
 
 
@@ -42,49 +47,69 @@ def refresh_access_token_metadata(
     refresh_token: str,
     timeout_seconds: int = 30,
     session: requests.Session | Any | None = None,
+    max_attempts: int = 3,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> OAuthTokenResponse:
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be positive")
     http = session or requests.Session()
-    transport_failure = None
-    try:
-        response = http.post(
-            GOOGLE_OAUTH_TOKEN_URL,
-            data={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "refresh_token": refresh_token,
-                "grant_type": "refresh_token",
-            },
-            timeout=timeout_seconds,
-        )
-    except requests.Timeout:
-        transport_failure = oauth_transport_failure(timeout=True)
-    except requests.RequestException:
-        transport_failure = oauth_transport_failure(timeout=False)
-    if transport_failure is not None:
-        raise transport_failure
+    for attempt in range(max_attempts):
+        transport_failure = None
+        try:
+            response = http.post(
+                GOOGLE_OAUTH_TOKEN_URL,
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                },
+                timeout=timeout_seconds,
+            )
+        except requests.Timeout:
+            transport_failure = oauth_transport_failure(timeout=True)
+        except requests.RequestException:
+            transport_failure = oauth_transport_failure(timeout=False)
+        if transport_failure is not None:
+            raise transport_failure
 
-    try:
-        payload = response.json()
-    except (TypeError, ValueError):
-        raise oauth_contract_failure(http_status=response.status_code) from None
-    if not isinstance(payload, dict):
-        raise oauth_contract_failure(http_status=response.status_code)
-    if response.status_code >= 400:
-        error = payload.get("error")
-        error_subtype = payload.get("error_subtype")
-        raise classify_oauth_error(
-            grant_type="refresh_token",
-            error=error if isinstance(error, str) else None,
-            error_subtype=error_subtype if isinstance(error_subtype, str) else None,
-            http_status=response.status_code,
+        try:
+            payload = response.json()
+        except (TypeError, ValueError):
+            raise oauth_contract_failure(http_status=response.status_code) from None
+        if not isinstance(payload, dict):
+            raise oauth_contract_failure(http_status=response.status_code)
+        if response.status_code >= 400:
+            error = payload.get("error")
+            error_subtype = payload.get("error_subtype")
+            failure = classify_oauth_error(
+                grant_type="refresh_token",
+                error=error if isinstance(error, str) else None,
+                error_subtype=error_subtype if isinstance(error_subtype, str) else None,
+                http_status=response.status_code,
+            )
+            if failure.retryable and attempt + 1 < max_attempts:
+                sleep(_retry_delay_seconds(response, attempt=attempt))
+                continue
+            raise failure
+        access_token = payload.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise oauth_contract_failure(http_status=response.status_code)
+        token_type = payload.get("token_type")
+        scope = payload.get("scope")
+        return OAuthTokenResponse(
+            access_token=access_token,
+            token_type=token_type if isinstance(token_type, str) else None,
+            scope=scope if isinstance(scope, str) else None,
         )
-    access_token = payload.get("access_token")
-    if not isinstance(access_token, str) or not access_token:
-        raise oauth_contract_failure(http_status=response.status_code)
-    token_type = payload.get("token_type")
-    scope = payload.get("scope")
-    return OAuthTokenResponse(
-        access_token=access_token,
-        token_type=token_type if isinstance(token_type, str) else None,
-        scope=scope if isinstance(scope, str) else None,
-    )
+    raise RuntimeError("unreachable")
+
+
+def _retry_delay_seconds(response: Any, *, attempt: int) -> float:
+    retry_after = getattr(response, "headers", {}).get("Retry-After")
+    if retry_after is not None:
+        try:
+            return min(30.0, max(0.0, float(retry_after)))
+        except (TypeError, ValueError):
+            pass
+    return min(30.0, float(2**attempt))

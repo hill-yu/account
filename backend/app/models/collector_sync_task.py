@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, String
+from sqlalchemy import Date, DateTime, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -10,6 +10,22 @@ from app.database import Base
 
 class CollectorSyncTask(Base):
     __tablename__ = "collector_sync_tasks"
+    __table_args__ = (
+        Index(
+            "uq_collector_sync_tasks_active_oauth_health_account",
+            "account_id",
+            unique=True,
+            sqlite_where=text("task_type = 'oauth_health_check' AND status IN ('pending', 'in_progress')"),
+            postgresql_where=text("task_type = 'oauth_health_check' AND status IN ('pending', 'in_progress')"),
+        ),
+        Index(
+            "uq_collector_sync_tasks_one_active_oauth_recovery",
+            "run_reason",
+            unique=True,
+            sqlite_where=text("run_reason = 'oauth_recovery' AND status IN ('pending', 'in_progress')"),
+            postgresql_where=text("run_reason = 'oauth_recovery' AND status IN ('pending', 'in_progress')"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False)

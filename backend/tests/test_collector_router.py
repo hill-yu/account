@@ -233,7 +233,11 @@ def test_operator_can_create_list_and_authorize_oauth_apps(client: TestClient, m
 
     callback = client.get(
         "/api/v1/oauth/google/callback",
-        params={"state": authorization_payload["state"], "code": "authorization-code"},
+        params={
+            "state": authorization_payload["state"],
+            "code": "authorization-code",
+            "iss": "https://accounts.google.com",
+        },
     )
     assert callback.status_code == 200
     assert callback.json() == {
@@ -284,13 +288,17 @@ def test_operator_can_create_list_and_authorize_oauth_apps(client: TestClient, m
         headers={"Authorization": "Bearer oauth-instance-token"},
     )
     assert runtime_config.status_code == 409
-    assert runtime_config.json()["detail"] == "OAuth app is not authorized for runtime fetch"
+    assert runtime_config.json()["detail"] == "Managed OAuth credential is required for runtime fetch"
 
 
 def test_google_callback_rejects_unknown_oauth_state(client: TestClient) -> None:
     response = client.get(
         "/api/v1/oauth/google/callback",
-        params={"state": "missing-state", "code": "authorization-code"},
+        params={
+            "state": "missing-state",
+            "code": "authorization-code",
+            "iss": "https://accounts.google.com",
+        },
     )
 
     assert response.status_code == 400
@@ -472,6 +480,7 @@ def test_operator_rejects_callback_json_when_callback_query_state_or_code_mismat
             "code": "callback-json-code",
             "redirect_uri": "https://jwtnx.com/oauth/google/callback",
             "callback_url": "https://jwtnx.com/oauth/google/callback?state=wrong-state&code=callback-json-code",
+            "iss": "https://accounts.google.com",
         },
     )
     assert wrong_state_response.status_code == 422
@@ -487,6 +496,7 @@ def test_operator_rejects_callback_json_when_callback_query_state_or_code_mismat
                 "https://jwtnx.com/oauth/google/callback"
                 f"?state={authorization_payload['state']}&code=wrong-code"
             ),
+            "iss": "https://accounts.google.com",
         },
     )
     assert wrong_code_response.status_code == 422

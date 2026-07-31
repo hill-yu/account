@@ -158,6 +158,52 @@ def test_parallel_unexpired_authorization_state_is_rejected(db_session: Session)
     assert exc_info.value.detail["code"] == "OAUTH_FLOW_ALREADY_ACTIVE"
 
 
+@pytest.mark.parametrize("flow_status", ["exchanging", "validation_pending"])
+def test_authorization_is_rejected_while_exchange_or_validation_is_active(
+    db_session: Session,
+    flow_status: str,
+) -> None:
+    oauth_app = create_account_with_oauth_app(db_session)
+    oauth_app.flow_status = flow_status
+    oauth_app.authorization_state = None
+    oauth_app.authorization_state_expires_at = None
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        oauth_service.generate_authorization_url(db_session, oauth_app.id)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "OAUTH_FLOW_ALREADY_ACTIVE"
+
+
+def test_new_oauth_app_encrypts_client_secret_without_legacy_plaintext(
+    db_session: Session,
+    credential_cipher: CredentialCipher,
+) -> None:
+    account = Account(name="new-encrypted-app", status="active")
+    db_session.add(account)
+    db_session.commit()
+
+    oauth_app = oauth_service.create_oauth_app(
+        db_session,
+        oauth_service.schemas.OAuthAppCreate(
+            account_id=account.id,
+            client_id="new-client-id",
+            client_secret="new-client-secret",
+            redirect_uri="https://new.example/oauth/google/callback",
+            scopes="https://www.googleapis.com/auth/admanager",
+        ),
+    )
+
+    credential = db_session.query(OAuthCredential).filter_by(oauth_app_id=oauth_app.id, status="staged").one()
+    assert oauth_app.client_secret == ""
+    assert oauth_app.pending_credential_version == credential.version
+    assert oauth_app.refresh_token_present is False
+    assert credential_cipher.decrypt(credential.client_secret_ciphertext) == "new-client-secret"
+    assert credential.refresh_token_ciphertext is None
+    assert credential.token_fingerprint is None
+
+
 def test_handle_google_callback_exchanges_code_and_persists_token_metadata(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -186,6 +232,7 @@ def test_handle_google_callback_exchanges_code_and_persists_token_metadata(
         db=db_session,
         state=pending_authorization.state,
         code="oauth-code-abc",
+        issuer=oauth_service.GOOGLE_OAUTH_ISSUER,
     )
 
     assert token_calls == [
@@ -228,7 +275,12 @@ def test_handle_google_callback_rejects_invalid_state(db_session: Session) -> No
     create_account_with_oauth_app(db_session)
 
     with pytest.raises(oauth_service.OAuthStateError):
-        oauth_service.handle_google_callback(db=db_session, state="invalid-state", code="oauth-code")
+        oauth_service.handle_google_callback(
+            db=db_session,
+            state="invalid-state",
+            code="oauth-code",
+            issuer=oauth_service.GOOGLE_OAUTH_ISSUER,
+        )
 
 
 def test_callback_consumes_state_before_token_exchange(
@@ -254,10 +306,20 @@ def test_callback_consumes_state_before_token_exchange(
 
     monkeypatch.setattr(oauth_service.requests, "post", exchange)
 
-    oauth_service.handle_google_callback(db_session, state=pending.state, code="one-time-code")
+    oauth_service.handle_google_callback(
+        db_session,
+        state=pending.state,
+        code="one-time-code",
+        issuer=oauth_service.GOOGLE_OAUTH_ISSUER,
+    )
 
     with pytest.raises(oauth_service.OAuthStateError):
-        oauth_service.handle_google_callback(db_session, state=pending.state, code="duplicate-code")
+        oauth_service.handle_google_callback(
+            db_session,
+            state=pending.state,
+            code="duplicate-code",
+            issuer=oauth_service.GOOGLE_OAUTH_ISSUER,
+        )
 
 
 def test_import_google_callback_payload_exchanges_code_for_matching_redirect_uri(
@@ -292,6 +354,7 @@ def test_import_google_callback_payload_exchanges_code_for_matching_redirect_uri
             code="oauth-json-code",
             redirect_uri=oauth_app.redirect_uri,
             callback_url=f"{oauth_app.redirect_uri}?state={pending_authorization.state}&code=oauth-json-code",
+            iss=oauth_service.GOOGLE_OAUTH_ISSUER,
         ),
     )
 
@@ -339,7 +402,12 @@ def test_revoked_callback_without_new_refresh_token_is_rejected_without_replacin
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        oauth_service.handle_google_callback(db_session, state=pending.state, code="code-without-refresh")
+        oauth_service.handle_google_callback(
+            db_session,
+            state=pending.state,
+            code="code-without-refresh",
+            issuer=oauth_service.GOOGLE_OAUTH_ISSUER,
+        )
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail["code"] == "OAUTH_REFRESH_TOKEN_MISSING"
@@ -380,7 +448,12 @@ def test_failed_healthy_reauthorization_preserves_active_credential(
     )
 
     with pytest.raises(HTTPException):
-        oauth_service.handle_google_callback(db_session, state=pending.state, code="failed-code")
+        oauth_service.handle_google_callback(
+            db_session,
+            state=pending.state,
+            code="failed-code",
+            issuer=oauth_service.GOOGLE_OAUTH_ISSUER,
+        )
 
     db_session.refresh(oauth_app)
     assert oauth_app.runtime_status == "healthy"
@@ -406,7 +479,12 @@ def test_oauth_events_do_not_store_callback_secrets(
         ),
     )
 
-    oauth_service.handle_google_callback(db_session, state=pending.state, code="secret-code")
+    oauth_service.handle_google_callback(
+        db_session,
+        state=pending.state,
+        code="secret-code",
+        issuer=oauth_service.GOOGLE_OAUTH_ISSUER,
+    )
 
     serialized = " ".join(
         str(
@@ -451,7 +529,7 @@ def test_oauth_list_exposes_managed_health_without_secret_fields(db_session: Ses
     assert serialized["flow_status"] == "completed"
     assert serialized["runtime_status"] == "degraded"
     assert serialized["active_credential_version"] == 4
-    assert serialized["credential_fingerprint"] == "1234567890abcdef1234567890abcdef"
+    assert serialized["credential_fingerprint"] == "1234567890ab"
     assert serialized["failure_class"] == "oauth_provider_unavailable"
     assert serialized["failure_count"] == 2
     assert serialized["next_action"] == "run_oauth_health_check"
@@ -474,10 +552,42 @@ def test_import_google_callback_payload_rejects_redirect_uri_mismatch(db_session
                     "https://wrong.example.com/oauth/google/callback"
                     f"?state={pending_authorization.state}&code=oauth-json-code"
                 ),
+                iss=oauth_service.GOOGLE_OAUTH_ISSUER,
             ),
         )
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "redirect_uri mismatch"
+
+
+def test_import_google_callback_payload_requires_google_issuer(db_session: Session) -> None:
+    oauth_app = create_account_with_oauth_app(db_session)
+    pending = oauth_service.generate_authorization_url(db_session, oauth_app.id)
+
+    with pytest.raises(HTTPException) as exc_info:
+        oauth_service.import_google_callback_payload(
+            db_session,
+            oauth_service.schemas.OAuthCallbackImportRequest(
+                state=pending.state,
+                code="oauth-json-code",
+                redirect_uri=oauth_app.redirect_uri,
+                callback_url=f"{oauth_app.redirect_uri}?state={pending.state}&code=oauth-json-code",
+                iss=None,
+            ),
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "issuer mismatch"
+
+
+def test_public_callback_requires_google_issuer(db_session: Session) -> None:
+    oauth_app = create_account_with_oauth_app(db_session)
+    pending = oauth_service.generate_authorization_url(db_session, oauth_app.id)
+
+    with pytest.raises(HTTPException) as exc_info:
+        oauth_service.handle_google_callback(db_session, state=pending.state, code="code", issuer=None)
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "issuer mismatch"
 
 
 def test_credential_ack_activates_exact_staged_version_and_creates_health_task(db_session: Session) -> None:
@@ -620,7 +730,12 @@ def test_callback_creates_validation_task_for_existing_instance(
         ),
     )
 
-    oauth_service.handle_google_callback(db_session, state=pending.state, code="one-time-code")
+    oauth_service.handle_google_callback(
+        db_session,
+        state=pending.state,
+        code="one-time-code",
+        issuer=oauth_service.GOOGLE_OAUTH_ISSUER,
+    )
 
     validation_task = db_session.query(CollectorSyncTask).filter_by(task_type="oauth_credential_validate").one()
     assert validation_task.account_id == oauth_app.account_id
@@ -708,3 +823,46 @@ def test_runtime_config_uses_encrypted_active_credential(
     assert runtime.google.credential_version == 3
     assert runtime.google.google_oauth_client_secret == "managed-client-secret"
     assert runtime.google.google_oauth_refresh_token == "managed-refresh-token"
+
+
+def test_runtime_config_rejects_legacy_plaintext_oauth_without_managed_version(db_session: Session) -> None:
+    oauth_app = create_account_with_oauth_app(db_session)
+    account = db_session.get(Account, oauth_app.account_id)
+    assert account is not None
+    account.external_account_id = "network-legacy"
+    oauth_app.authorization_status = "authorized"
+    oauth_app.runtime_status = "healthy"
+    oauth_app.refresh_token = "legacy-refresh-token"
+    instance = CollectorInstance(
+        account_id=account.id,
+        name="legacy-runtime-node",
+        instance_token="legacy-runtime-token",
+        status="ready",
+    )
+    db_session.add(instance)
+    db_session.flush()
+    db_session.add(
+        ProxyBinding(
+            account_id=account.id,
+            collector_instance_id=instance.id,
+            provider_name="proxyco",
+            protocol="socks5",
+            host="proxy.example.com",
+            port=5001,
+            username="proxy-user",
+            password="proxy-password",
+            expected_egress_ip="203.0.113.20",
+            status="active",
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.build_runtime_config(
+            db_session,
+            instance,
+            control_plane_base_url="https://control.example.com",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Managed OAuth credential is required for runtime fetch"
