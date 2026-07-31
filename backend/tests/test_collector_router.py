@@ -42,6 +42,7 @@ def client(tmp_path: Path) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_db] = override_get_db
 
     with TestClient(app) as test_client:
+        test_client.headers.update({"X-ADX-Operator-Token": "test-operator-token"})
         yield test_client
 
     app.dependency_overrides.clear()
@@ -66,6 +67,12 @@ class DummyHttpxResponse:
 
     def json(self) -> dict[str, object]:
         return self._payload
+
+
+def test_operator_routes_require_operator_authentication(client: TestClient) -> None:
+    response = client.get("/api/v1/operator/accounts", headers={"X-ADX-Operator-Token": "wrong-token"})
+
+    assert response.status_code == 401
 
 
 def test_operator_and_collector_workflow_happy_path(client: TestClient) -> None:
@@ -1510,8 +1517,9 @@ def test_manual_fetch_uses_direct_collector_without_calling_fetch_php(
             "account_id": account_id,
             "collector_instance_id": instance_id,
             "task_type": "report_fetch_hourly",
-            "report_date": "2026-06-23",
-            "status": "pending",
+                "report_date": "2026-06-23",
+                "status": "pending",
+                "credential_version": None,
             "external_request_id": payload["request_id"],
             "started_at": None,
             "finished_at": None,

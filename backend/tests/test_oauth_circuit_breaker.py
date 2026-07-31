@@ -131,7 +131,7 @@ def test_refresh_revoked_revalidates_once_then_opens_circuit(tmp_path: Path) -> 
         db,
         instance,
         health_task.id,
-        schemas.TaskStatusUpdate(status="failed", failure_class="oauth_refresh_revoked"),
+        schemas.TaskStatusUpdate(status="failed", failure_class="oauth_refresh_revoked", credential_version=1),
     )
 
     db.refresh(oauth_app)

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     operator_remote_report_timeout_seconds: int = 15
     credential_encryption_key: str | None = None
     credential_fingerprint_key: str | None = None
+    operator_api_token: str | None = None
     allow_stub_runtime_with_managed_credentials: bool = False
     direct_collector_only: bool = True
 

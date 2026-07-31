@@ -1,0 +1,3 @@
+# Install as /etc/nginx/conf.d/operator-token.conf with mode 0600.
+# This value is an internal backend credential, never a VITE_* value.
+set $adx_operator_token "replace-with-ADX_COLLECTOR_OPERATOR_API_TOKEN";

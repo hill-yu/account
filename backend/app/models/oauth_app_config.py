@@ -53,7 +53,7 @@ class OAuthAppConfig(Base):
 
     @property
     def refresh_token_present(self) -> bool:
-        if self.refresh_token or self.active_credential_version:
+        if self.active_credential_version:
             return True
         return any(
             credential.status == "staged" and bool(credential.refresh_token_ciphertext)

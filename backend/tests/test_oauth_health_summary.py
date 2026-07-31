@@ -102,6 +102,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestCli
         db.commit()
 
     with TestClient(app) as test_client:
+        test_client.headers.update({"X-ADX-Operator-Token": "test-operator-token"})
         yield test_client
 
     app.dependency_overrides.clear()

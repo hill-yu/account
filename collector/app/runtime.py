@@ -78,11 +78,13 @@ class CollectorRuntime:
 
         self.control_plane_client.heartbeat(status="ready", observed_egress_ip=observed_egress_ip)
 
-        task = self.control_plane_client.get_next_task()
+        task = self.control_plane_client.get_next_task(credential_version=self.settings.credential_version)
         if task is None:
             return RuntimeResult(outcome="idle")
 
         try:
+            if task.credential_version is not None and task.credential_version != self.settings.credential_version:
+                raise RuntimeError("claimed task credential version does not match collector runtime")
             if task.task_type == "oauth_credential_validate":
                 if self.oauth_validator is None:
                     raise RuntimeError("OAuth credential validator is not configured")
@@ -91,11 +93,16 @@ class CollectorRuntime:
                 return RuntimeResult(outcome="succeeded", task_id=task.id)
             batches = list(self.fetcher.fetch(task))
             for batch in batches:
-                self.control_plane_client.submit_batch(task.id, batch)
+                self.control_plane_client.submit_batch(
+                    task.id,
+                    batch,
+                    credential_version=self.settings.credential_version,
+                )
             self.control_plane_client.update_task_status(
                 task.id,
                 "succeeded",
                 f"uploaded {len(batches)} batches",
+                credential_version=self.settings.credential_version,
             )
             return RuntimeResult(outcome="succeeded", task_id=task.id)
         except Exception as exc:
@@ -105,5 +112,6 @@ class CollectorRuntime:
                 "failed",
                 message=None,
                 failure_class=failure_class,
+                credential_version=self.settings.credential_version,
             )
             raise

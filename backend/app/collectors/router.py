@@ -6,14 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from sqlalchemy.orm import Session
 
 from app.collectors import ingestion_service, oauth_service, schemas, service
-from app.collectors.security import get_authenticated_instance
+from app.collectors.security import get_authenticated_instance, require_operator_authentication
 from app.config import get_settings
 from app.database import get_db
 from app.models.account import Account
 from app.models.collector_instance import CollectorInstance
 
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_operator_authentication)])
 
 
 @router.post("/operator/accounts", response_model=schemas.AccountRead, status_code=status.HTTP_201_CREATED)
@@ -385,10 +385,11 @@ def acknowledge_oauth_credential(
 
 @router.get("/collector/tasks/next", response_model=schemas.SyncTaskRead)
 def get_next_task(
+    credential_version: int | None = Query(default=None),
     db: Session = Depends(get_db),
     instance: CollectorInstance = Depends(get_authenticated_instance),
 ) -> schemas.SyncTaskRead | Response:
-    task = service.claim_next_task(db, instance)
+    task = service.claim_next_task(db, instance, credential_version=credential_version)
     if task is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     return task

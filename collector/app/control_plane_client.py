@@ -41,10 +41,11 @@ class ControlPlaneClient:
         response.raise_for_status()
         return CollectorRuntimeConfig.from_dict(response.json())
 
-    def get_next_task(self) -> CollectorTask | None:
+    def get_next_task(self, *, credential_version: int | None) -> CollectorTask | None:
         response = self._session.get(
             f"{self._base_url}/api/v1/collector/tasks/next",
             headers=self._headers,
+            params={"credential_version": credential_version},
             timeout=self._timeout_seconds,
         )
         if response.status_code == 204:
@@ -52,11 +53,11 @@ class ControlPlaneClient:
         response.raise_for_status()
         return CollectorTask.from_dict(response.json())
 
-    def submit_batch(self, task_id: int, batch: FetchBatch) -> dict[str, Any]:
+    def submit_batch(self, task_id: int, batch: FetchBatch, *, credential_version: int | None) -> dict[str, Any]:
         response = self._session.post(
             f"{self._base_url}/api/v1/collector/tasks/{task_id}/batches",
             headers=self._headers,
-            json=batch.as_dict(),
+            json={**batch.as_dict(), "credential_version": credential_version},
             timeout=self._timeout_seconds,
         )
         response.raise_for_status()
@@ -68,8 +69,14 @@ class ControlPlaneClient:
         status: str,
         message: str | None = None,
         failure_class: str | None = None,
+        credential_version: int | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"status": status, "message": message, "failure_class": failure_class}
+        payload: dict[str, Any] = {
+            "status": status,
+            "message": message,
+            "failure_class": failure_class,
+            "credential_version": credential_version,
+        }
         response = self._session.post(
             f"{self._base_url}/api/v1/collector/tasks/{task_id}/status",
             headers=self._headers,

@@ -42,6 +42,7 @@ def client(tmp_path: Path) -> Generator[tuple[TestClient, sessionmaker[Session]]
     app.dependency_overrides[get_db] = override_get_db
 
     with TestClient(app) as test_client:
+        test_client.headers.update({"X-ADX-Operator-Token": "test-operator-token"})
         yield test_client, session_factory
 
     app.dependency_overrides.clear()

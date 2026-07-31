@@ -23,6 +23,8 @@ def create_app(
     scheduler_factory: Callable[[], FetchScheduler] | None = None,
 ) -> FastAPI:
     settings = get_settings()
+    if settings.app_env == "production" and not settings.operator_api_token:
+        raise RuntimeError("ADX_COLLECTOR_OPERATOR_API_TOKEN is required in production")
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:

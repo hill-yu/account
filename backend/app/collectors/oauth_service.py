@@ -317,18 +317,9 @@ def _resolve_oauth_client_secret(
     oauth_app: OAuthAppConfig,
     cipher: CredentialCipher,
 ) -> str:
-    if oauth_app.client_secret:
-        return oauth_app.client_secret
     credential_version = oauth_app.active_credential_version or oauth_app.pending_credential_version
     if credential_version is None:
-        latest = db.scalar(
-            select(OAuthCredential)
-            .where(OAuthCredential.oauth_app_id == oauth_app.id)
-            .order_by(OAuthCredential.version.desc())
-        )
-        if latest is None:
-            _raise_oauth_conflict("OAUTH_CLIENT_SECRET_UNAVAILABLE")
-        return cipher.decrypt(latest.client_secret_ciphertext)
+        _raise_oauth_conflict("OAUTH_CREDENTIAL_MIGRATION_REQUIRED")
     credential = db.scalar(
         select(OAuthCredential).where(
             OAuthCredential.oauth_app_id == oauth_app.id,
@@ -533,6 +524,7 @@ def _exchange_authorization_code(
                 task_type="oauth_credential_validate",
                 report_date=now.date(),
                 status="pending",
+                credential_version=next_version,
                 external_request_id=f"oauth-validate-{oauth_app.id}-v{next_version}",
             )
         )
@@ -586,7 +578,7 @@ def acknowledge_credential_validation(
 ) -> schemas.OAuthCredentialAckResponse:
     if payload.account_id != instance.account_id:
         _raise_stale_credential_ack()
-    oauth_app = db.scalar(select(OAuthAppConfig).where(OAuthAppConfig.account_id == instance.account_id))
+    oauth_app = service.acquire_oauth_app_write_guard(db, account_id=instance.account_id)
     account = db.get(Account, instance.account_id)
     task = db.get(CollectorSyncTask, payload.task_id)
     if (
@@ -597,6 +589,7 @@ def acknowledge_credential_validation(
         or task.collector_instance_id != instance.id
         or task.task_type != "oauth_credential_validate"
         or task.status != "in_progress"
+        or task.credential_version != payload.credential_version
         or oauth_app.flow_status != "validation_pending"
         or oauth_app.pending_credential_version != payload.credential_version
         or account.external_account_id != payload.network_code
@@ -662,7 +655,19 @@ def acknowledge_credential_validation(
         task_type="oauth_health_check",
         report_date=health_report_date,
         status="pending",
+        credential_version=payload.credential_version,
         external_request_id=f"oauth-health-{oauth_app.id}-v{payload.credential_version}",
+    )
+    db.execute(
+        update(CollectorSyncTask)
+        .where(
+            CollectorSyncTask.account_id == account.id,
+            CollectorSyncTask.status.in_(("pending", "in_progress")),
+            CollectorSyncTask.task_type != "oauth_credential_validate",
+            CollectorSyncTask.credential_version.is_not(None),
+            CollectorSyncTask.credential_version != payload.credential_version,
+        )
+        .values(status="blocked", finished_at=now, updated_at=now)
     )
     db.add_all([staged, oauth_app, account, task, health_task])
     _record_event(

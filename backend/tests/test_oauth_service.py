@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import models as _models  # noqa: F401
-from app.collectors import oauth_service, service
+from app.collectors import fetch_policy, oauth_service, service
 from app.collectors.credential_crypto import CredentialCipher
 from app.database import Base
 from app.models.account import Account
@@ -79,11 +79,24 @@ def create_account_with_oauth_app(db_session: Session) -> OAuthAppConfig:
     oauth_app = OAuthAppConfig(
         account_id=account.id,
         client_id="client-id",
-        client_secret="client-secret",
+        client_secret="",
         redirect_uri="https://control.example.com/api/v1/oauth/google/callback",
         scopes="https://www.googleapis.com/auth/dfp",
+        pending_credential_version=1,
     )
     db_session.add(oauth_app)
+    db_session.flush()
+    cipher = oauth_service._credential_cipher()
+    db_session.add(
+        OAuthCredential(
+            oauth_app_id=oauth_app.id,
+            version=1,
+            status="staged",
+            client_secret_ciphertext=cipher.encrypt("client-secret"),
+            refresh_token_ciphertext=None,
+            token_fingerprint=None,
+        )
+    )
     db_session.commit()
     db_session.refresh(oauth_app)
     return oauth_app
@@ -204,6 +217,34 @@ def test_new_oauth_app_encrypts_client_secret_without_legacy_plaintext(
     assert credential.token_fingerprint is None
 
 
+def test_runtime_oauth_secret_resolution_rejects_unmigrated_legacy_secret(
+    db_session: Session,
+    credential_cipher: CredentialCipher,
+) -> None:
+    account = Account(name="legacy-oauth-account", status="active")
+    db_session.add(account)
+    db_session.flush()
+    oauth_app = OAuthAppConfig(
+        account_id=account.id,
+        client_id="legacy-client-id",
+        client_secret="legacy-client-secret",
+        redirect_uri="https://control.example.com/api/v1/oauth/google/callback",
+        scopes="https://www.googleapis.com/auth/dfp",
+    )
+    db_session.add(oauth_app)
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        oauth_service._resolve_oauth_client_secret(
+            db_session,
+            oauth_app=oauth_app,
+            cipher=credential_cipher,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "OAUTH_CREDENTIAL_MIGRATION_REQUIRED"
+
+
 def test_handle_google_callback_exchanges_code_and_persists_token_metadata(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -241,7 +282,7 @@ def test_handle_google_callback_exchanges_code_and_persists_token_metadata(
             "data": {
                 "code": "oauth-code-abc",
                 "client_id": oauth_app.client_id,
-                "client_secret": oauth_app.client_secret,
+                    "client_secret": "client-secret",
                 "redirect_uri": oauth_app.redirect_uri,
                 "grant_type": "authorization_code",
             },
@@ -267,7 +308,7 @@ def test_handle_google_callback_exchanges_code_and_persists_token_metadata(
     staged = db_session.query(OAuthCredential).filter_by(oauth_app_id=oauth_app.id, status="staged").one()
     assert staged.version == 1
     assert credential_cipher.decrypt(staged.refresh_token_ciphertext) == "refresh-token-456"
-    assert credential_cipher.decrypt(staged.client_secret_ciphertext) == oauth_app.client_secret
+    assert credential_cipher.decrypt(staged.client_secret_ciphertext) == "client-secret"
     assert staged.token_fingerprint == credential_cipher.fingerprint("refresh-token-456")
 
 
@@ -373,17 +414,11 @@ def test_revoked_callback_without_new_refresh_token_is_rejected_without_replacin
     oauth_app = create_account_with_oauth_app(db_session)
     oauth_app.runtime_status = "revoked"
     oauth_app.active_credential_version = 1
-    oauth_app.refresh_token = "legacy-old-refresh-token"
-    db_session.add(
-        OAuthCredential(
-            oauth_app_id=oauth_app.id,
-            version=1,
-            status="active",
-            client_secret_ciphertext="old-client-ciphertext",
-            refresh_token_ciphertext="old-refresh-ciphertext",
-            token_fingerprint="old-fingerprint",
-        )
-    )
+    oauth_app.pending_credential_version = None
+    active_credential = db_session.query(OAuthCredential).filter_by(oauth_app_id=oauth_app.id, version=1).one()
+    active_credential.status = "active"
+    active_credential.refresh_token_ciphertext = oauth_service._credential_cipher().encrypt("old-refresh-token")
+    active_credential.token_fingerprint = oauth_service._credential_cipher().fingerprint("old-refresh-token")
     db_session.commit()
     pending = oauth_service.generate_authorization_url(db_session, oauth_app.id)
 
@@ -425,16 +460,11 @@ def test_failed_healthy_reauthorization_preserves_active_credential(
     oauth_app = create_account_with_oauth_app(db_session)
     oauth_app.runtime_status = "healthy"
     oauth_app.active_credential_version = 1
-    db_session.add(
-        OAuthCredential(
-            oauth_app_id=oauth_app.id,
-            version=1,
-            status="active",
-            client_secret_ciphertext="active-client-ciphertext",
-            refresh_token_ciphertext="active-refresh-ciphertext",
-            token_fingerprint="active-fingerprint",
-        )
-    )
+    oauth_app.pending_credential_version = None
+    active_credential = db_session.query(OAuthCredential).filter_by(oauth_app_id=oauth_app.id, version=1).one()
+    active_credential.status = "active"
+    active_credential.refresh_token_ciphertext = oauth_service._credential_cipher().encrypt("active-refresh-token")
+    active_credential.token_fingerprint = oauth_service._credential_cipher().fingerprint("active-refresh-token")
     db_session.commit()
     pending = oauth_service.generate_authorization_url(
         db_session,
@@ -612,14 +642,6 @@ def test_credential_ack_activates_exact_staged_version_and_creates_health_task(d
             CollectorAccountPolicy(account_id=account.id, lifecycle_status="active"),
             OAuthCredential(
                 oauth_app_id=oauth_app.id,
-                version=1,
-                status="active",
-                client_secret_ciphertext="old-client",
-                refresh_token_ciphertext="old-refresh",
-                token_fingerprint="old-fingerprint",
-            ),
-            OAuthCredential(
-                oauth_app_id=oauth_app.id,
                 version=2,
                 status="staged",
                 client_secret_ciphertext="new-client",
@@ -628,6 +650,10 @@ def test_credential_ack_activates_exact_staged_version_and_creates_health_task(d
             ),
         ]
     )
+    active_credential = db_session.query(OAuthCredential).filter_by(oauth_app_id=oauth_app.id, version=1).one()
+    active_credential.status = "active"
+    active_credential.refresh_token_ciphertext = oauth_service._credential_cipher().encrypt("old-refresh")
+    active_credential.token_fingerprint = "old-fingerprint"
     db_session.flush()
     validation_task = CollectorSyncTask(
         account_id=account.id,
@@ -635,6 +661,7 @@ def test_credential_ack_activates_exact_staged_version_and_creates_health_task(d
         task_type="oauth_credential_validate",
         report_date=datetime.utcnow().date(),
         status="in_progress",
+        credential_version=2,
         external_request_id="oauth-validate-test-v2",
     )
     db_session.add(validation_task)
@@ -700,6 +727,213 @@ def test_credential_ack_activates_exact_staged_version_and_creates_health_task(d
         )
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail["code"] == "STALE_CREDENTIAL_ACK"
+
+
+def test_rotated_credential_rejects_stale_task_status_without_mutating_task(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    credential_cipher: CredentialCipher,
+) -> None:
+    oauth_app = create_account_with_oauth_app(db_session)
+    account = db_session.get(Account, oauth_app.account_id)
+    assert account is not None
+    instance = CollectorInstance(
+        account_id=account.id,
+        name="stale-version-node",
+        instance_token="stale-version-token",
+        status="ready",
+    )
+    oauth_app.flow_status = "completed"
+    oauth_app.runtime_status = "healthy"
+    oauth_app.active_credential_version = 2
+    oauth_app.pending_credential_version = None
+    db_session.add_all(
+        [
+            instance,
+            CollectorAccountPolicy(
+                account_id=account.id,
+                lifecycle_status="active",
+                gray_enabled=True,
+                hourly_fetch_enabled=True,
+                authoritative_daily_enabled=True,
+                manual_fetch_enabled=True,
+            ),
+            OAuthCredential(
+                oauth_app_id=oauth_app.id,
+                version=2,
+                status="active",
+                client_secret_ciphertext=credential_cipher.encrypt("v2-client-secret"),
+                refresh_token_ciphertext=credential_cipher.encrypt("v2-refresh-token"),
+                token_fingerprint=credential_cipher.fingerprint("v2-refresh-token"),
+            ),
+        ]
+    )
+    db_session.flush()
+    task = CollectorSyncTask(
+        account_id=account.id,
+        collector_instance_id=instance.id,
+        task_type="report_fetch",
+        report_date=datetime.utcnow().date(),
+        status="in_progress",
+        credential_version=1,
+    )
+    db_session.add(task)
+    db_session.commit()
+    monkeypatch.setattr(service, "assert_fetch_allowed", fetch_policy.assert_fetch_allowed)
+    original_scalar = db_session.scalar
+    original_execute = db_session.execute
+    statements = []
+    executed_statements = []
+
+    def track_scalar(statement, *args, **kwargs):
+        statements.append(statement)
+        return original_scalar(statement, *args, **kwargs)
+
+    def track_execute(statement, *args, **kwargs):
+        executed_statements.append(statement)
+        return original_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "scalar", track_scalar)
+    monkeypatch.setattr(db_session, "execute", track_execute)
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.update_task_status(
+            db_session,
+            instance,
+            task.id,
+            oauth_service.schemas.TaskStatusUpdate(status="succeeded", credential_version=1),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "FETCH_CREDENTIAL_VERSION_MISMATCH"
+    assert any(getattr(statement, "_for_update_arg", None) is not None for statement in statements)
+    assert any(
+        getattr(getattr(statement, "table", None), "name", None) == "oauth_app_configs"
+        for statement in executed_statements
+    )
+    db_session.refresh(task)
+    assert task.status == "in_progress"
+
+
+def test_sqlite_oauth_app_write_guard_fails_closed_during_rotation(tmp_path: Path) -> None:
+    """SQLite must serialize task writes with credential ACK, despite lacking FOR UPDATE."""
+    database_path = tmp_path / "oauth-write-guard.db"
+    engine = create_engine(
+        f"sqlite:///{database_path.as_posix()}",
+        connect_args={"check_same_thread": False, "timeout": 0.01},
+    )
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, class_=Session)
+    Base.metadata.create_all(engine)
+    first = session_factory()
+    second = session_factory()
+    try:
+        oauth_app = create_account_with_oauth_app(first)
+        first.commit()
+
+        assert service.acquire_oauth_app_write_guard(first, account_id=oauth_app.account_id) is not None
+        with pytest.raises(HTTPException) as exc_info:
+            service.acquire_oauth_app_write_guard(second, account_id=oauth_app.account_id)
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == "FETCH_CREDENTIAL_ROTATION_IN_PROGRESS"
+    finally:
+        first.rollback()
+        second.rollback()
+        first.close()
+        second.close()
+        engine.dispose()
+
+
+def test_sqlite_oauth_app_write_guard_refreshes_after_committed_rotation(
+    tmp_path: Path,
+    credential_cipher: CredentialCipher,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A waiter must see the new version after the ACK holder commits."""
+    monkeypatch.setattr(service, "assert_fetch_allowed", fetch_policy.assert_fetch_allowed)
+    database_path = tmp_path / "oauth-write-guard-refresh.db"
+    engine = create_engine(
+        f"sqlite:///{database_path.as_posix()}",
+        connect_args={"check_same_thread": False, "timeout": 0.01},
+    )
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, class_=Session)
+    Base.metadata.create_all(engine)
+    rotator = session_factory()
+    waiting_worker = session_factory()
+    try:
+        oauth_app = create_account_with_oauth_app(rotator)
+        account = rotator.get(Account, oauth_app.account_id)
+        assert account is not None
+        instance = CollectorInstance(
+            account_id=account.id,
+            name="write-guard-refresh-node",
+            instance_token="write-guard-refresh-token",
+            status="ready",
+        )
+        rotator.add_all(
+            [
+                instance,
+                CollectorAccountPolicy(account_id=account.id, lifecycle_status="active"),
+            ]
+        )
+        credential_v1 = rotator.query(OAuthCredential).filter_by(oauth_app_id=oauth_app.id, version=1).one()
+        credential_v1.status = "active"
+        credential_v1.refresh_token_ciphertext = credential_cipher.encrypt("refresh-v1")
+        credential_v1.token_fingerprint = credential_cipher.fingerprint("refresh-v1")
+        oauth_app.flow_status = "completed"
+        oauth_app.runtime_status = "healthy"
+        oauth_app.active_credential_version = 1
+        oauth_app.pending_credential_version = None
+        rotator.flush()
+        task = CollectorSyncTask(
+            account_id=account.id,
+            collector_instance_id=instance.id,
+            task_type="report_fetch",
+            report_date=datetime.utcnow().date(),
+            status="in_progress",
+            credential_version=1,
+        )
+        rotator.add(task)
+        rotator.commit()
+
+        worker_instance = waiting_worker.get(CollectorInstance, instance.id)
+        worker_task = waiting_worker.get(CollectorSyncTask, task.id)
+        cached_app = waiting_worker.get(OAuthAppConfig, oauth_app.id)
+        assert worker_instance is not None and worker_task is not None and cached_app is not None
+        assert cached_app.active_credential_version == 1
+
+        credential_v1.status = "retired"
+        rotator.add(
+            OAuthCredential(
+                oauth_app_id=oauth_app.id,
+                version=2,
+                status="active",
+                client_secret_ciphertext=credential_cipher.encrypt("client-v2"),
+                refresh_token_ciphertext=credential_cipher.encrypt("refresh-v2"),
+                token_fingerprint=credential_cipher.fingerprint("refresh-v2"),
+            )
+        )
+        oauth_app.active_credential_version = 2
+        rotator.commit()
+
+        guarded_app = service.acquire_oauth_app_write_guard(waiting_worker, account_id=account.id)
+        assert guarded_app is not None
+        assert guarded_app.active_credential_version == 2
+        with pytest.raises(HTTPException) as exc_info:
+            service._assert_task_credential_is_current(
+                waiting_worker,
+                instance=worker_instance,
+                task=worker_task,
+                supplied_version=1,
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == "FETCH_CREDENTIAL_VERSION_MISMATCH"
+    finally:
+        rotator.rollback()
+        waiting_worker.rollback()
+        rotator.close()
+        waiting_worker.close()
+        engine.dispose()
 
 
 def test_callback_creates_validation_task_for_existing_instance(

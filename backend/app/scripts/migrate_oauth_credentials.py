@@ -145,6 +145,7 @@ def migrate_oauth_credentials(
                         run_reason="oauth_migration",
                         report_date=report_date,
                         status="pending",
+                        credential_version=version,
                         external_request_id=f"oauth-migration-health-{oauth_app.id}-v{version}",
                     )
                 )

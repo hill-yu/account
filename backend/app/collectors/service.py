@@ -44,7 +44,7 @@ from zoneinfo import ZoneInfo
 import httpx  # 异步 HTTP 客户端，用于调用远程 Node 端 API
 from fastapi import HTTPException, status
 from sqlalchemy import case, cast, distinct, func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy.types import Integer, Numeric
 
@@ -469,6 +469,7 @@ def enqueue_next_oauth_recovery_gap(
     if not gaps:
         return None
     gap = gaps[0]
+    credential_version = _active_credential_version_for_task(db, account_id=gap.account_id)
     task = CollectorSyncTask(
         account_id=gap.account_id,
         collector_instance_id=gap.collector_instance_id,
@@ -476,6 +477,7 @@ def enqueue_next_oauth_recovery_gap(
         run_reason="oauth_recovery",
         report_date=gap.report_date,
         status="pending",
+        credential_version=credential_version,
         external_request_id=f"oauth-recovery-{gap.task_type}-{gap.account_id}-{gap.report_date.isoformat()}",
     )
     if not _add_unique_active_task(db, task):
@@ -491,6 +493,85 @@ def _add_unique_active_task(db: Session, task: CollectorSyncTask) -> bool:
     except IntegrityError:
         return False
     return True
+
+
+def _active_credential_version_for_task(db: Session, *, account_id: int) -> int | None:
+    oauth_app = db.scalar(select(OAuthAppConfig).where(OAuthAppConfig.account_id == account_id))
+    return oauth_app.active_credential_version if oauth_app is not None else None
+
+
+def acquire_oauth_app_write_guard(db: Session, *, account_id: int) -> OAuthAppConfig | None:
+    """Serialize task writes with credential activation on PostgreSQL and SQLite.
+
+    PostgreSQL serializes this no-op row update with a row lock. SQLite ignores
+    ``FOR UPDATE``, but this write takes its database write-intent lock before
+    version validation. A competing rotation therefore waits or fails closed.
+    """
+    try:
+        db.execute(
+            update(OAuthAppConfig)
+            .where(OAuthAppConfig.account_id == account_id)
+            .values(updated_at=OAuthAppConfig.updated_at)
+        )
+    except OperationalError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "FETCH_CREDENTIAL_ROTATION_IN_PROGRESS", "message": "Credential rotation is in progress"},
+        ) from exc
+    # A writer that waited for an ACK commit must not retain the OAuth app or
+    # task it loaded before waiting.  ``populate_existing`` reloads the locked
+    # app even when it is present in the Session identity map; expiring the
+    # rest also makes subsequent task/policy checks observe that same commit.
+    db.expire_all()
+    return db.scalar(
+        select(OAuthAppConfig)
+        .where(OAuthAppConfig.account_id == account_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+
+
+def _assert_task_credential_is_current(
+    db: Session,
+    *,
+    instance: CollectorInstance,
+    task: CollectorSyncTask,
+    supplied_version: int | None,
+) -> OAuthAppConfig | None:
+    # Every task write holds this guard until its commit. Credential activation
+    # takes the identical guard before changing active version, so a check
+    # cannot be separated from the subsequent batch/status write.
+    oauth_app = acquire_oauth_app_write_guard(db, account_id=instance.account_id)
+    if task.credential_version is None:
+        # Legacy non-OAuth tasks retain their historical contract. In a
+        # production OAuth account, fetch policy still rejects this route.
+        assert_fetch_allowed(db, account_id=instance.account_id, fetch_kind="claim")
+        return oauth_app
+    if supplied_version is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "FETCH_CREDENTIAL_VERSION_REQUIRED", "message": "Collector credential version is required"},
+        )
+    if supplied_version != task.credential_version:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "FETCH_CREDENTIAL_VERSION_MISMATCH", "message": "Task credential version does not match collector runtime"},
+        )
+    fetch_kind = (
+        "oauth_credential_validate"
+        if task.task_type == "oauth_credential_validate"
+        else "oauth_health_check"
+        if task.task_type == "oauth_health_check"
+        else "claim"
+    )
+    assert_fetch_allowed(
+        db,
+        account_id=instance.account_id,
+        fetch_kind=fetch_kind,
+        credential_version=task.credential_version,
+    )
+    return oauth_app
 
 
 def fail_stale_in_progress_tasks(
@@ -987,6 +1068,7 @@ def create_task(db: Session, payload: schemas.SyncTaskCreate) -> CollectorSyncTa
         task_type=payload.task_type,
         report_date=payload.report_date,
         status=payload.status,
+        credential_version=_active_credential_version_for_task(db, account_id=payload.account_id),
         external_request_id=payload.external_request_id,
     )
     db.add(task)
@@ -1130,6 +1212,7 @@ def _create_hourly_sync_task(
         task_type="report_fetch_hourly",
         report_date=report_date,
         status="pending",
+        credential_version=_active_credential_version_for_task(db, account_id=account_id),
         external_request_id=external_request_id or f"hourly-{account_id}-{report_date.isoformat()}-{token_urlsafe(8)}",
     )
     db.add(task)
@@ -1156,6 +1239,7 @@ def _create_daily_sync_task(
         task_type="report_fetch",
         report_date=report_date,
         status="pending",
+        credential_version=_active_credential_version_for_task(db, account_id=account_id),
         external_request_id=external_request_id or f"daily-{account_id}-{report_date.isoformat()}-{token_urlsafe(8)}",
     )
     db.add(task)
@@ -2587,8 +2671,11 @@ def build_runtime_config(
         and allow_stub_runtime_with_managed_credentials
         and oauth_app.runtime_status == "healthy"
         and oauth_app.active_credential_version is not None
-        and not oauth_app.refresh_token
     ):
+        google_runtime = schemas.CollectorGoogleRuntimeCredentials(
+            fetch_mode="stub",
+            credential_version=oauth_app.active_credential_version,
+        )
         oauth_app = None
 
     if oauth_app is not None and oauth_app.active_credential_version is not None:
@@ -2683,7 +2770,12 @@ def record_heartbeat(
     return instance, payload.observed_egress_ip
 
 
-def claim_next_task(db: Session, instance: CollectorInstance) -> CollectorSyncTask | None:
+def claim_next_task(
+    db: Session,
+    instance: CollectorInstance,
+    *,
+    credential_version: int | None,
+) -> CollectorSyncTask | None:
     """采集器运行时认领下一个待执行的任务。
 
     认领策略（优先级）：
@@ -2725,21 +2817,11 @@ def claim_next_task(db: Session, instance: CollectorInstance) -> CollectorSyncTa
         if hourly_tasks
         else min(pending_tasks, key=lambda task: (task.created_at, task.id))
     )
-    oauth_app = db.scalar(select(OAuthAppConfig).where(OAuthAppConfig.account_id == instance.account_id))
-    if next_task.task_type == "oauth_credential_validate":
-        fetch_kind = "oauth_credential_validate"
-        credential_version = oauth_app.pending_credential_version if oauth_app is not None else None
-    elif next_task.task_type == "oauth_health_check":
-        fetch_kind = "oauth_health_check"
-        credential_version = oauth_app.active_credential_version if oauth_app is not None else None
-    else:
-        fetch_kind = "claim"
-        credential_version = oauth_app.active_credential_version if oauth_app is not None else None
-    assert_fetch_allowed(
+    _assert_task_credential_is_current(
         db,
-        account_id=instance.account_id,
-        fetch_kind=fetch_kind,
-        credential_version=credential_version,
+        instance=instance,
+        task=next_task,
+        supplied_version=credential_version,
     )
 
     # 原子认领（CAS 操作）
@@ -2788,21 +2870,11 @@ def update_task_status(
     )
     if task_before_update is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
-    oauth_app = db.scalar(select(OAuthAppConfig).where(OAuthAppConfig.account_id == instance.account_id))
-    if task_before_update.task_type == "oauth_credential_validate":
-        fetch_kind = "oauth_credential_validate"
-        credential_version = oauth_app.pending_credential_version if oauth_app is not None else None
-    elif task_before_update.task_type == "oauth_health_check":
-        fetch_kind = "oauth_health_check"
-        credential_version = oauth_app.active_credential_version if oauth_app is not None else None
-    else:
-        fetch_kind = "terminal_status"
-        credential_version = oauth_app.active_credential_version if oauth_app is not None else None
-    assert_fetch_allowed(
+    oauth_app = _assert_task_credential_is_current(
         db,
-        account_id=instance.account_id,
-        fetch_kind=fetch_kind,
-        credential_version=credential_version,
+        instance=instance,
+        task=task_before_update,
+        supplied_version=payload.credential_version,
     )
     # 反向查询：当前允许的源状态
     source_statuses = allowed_source_statuses(payload.status)
@@ -2969,6 +3041,7 @@ def _request_oauth_revalidation(
                 task_type="oauth_health_check",
                 report_date=report_date,
                 status="pending",
+                credential_version=_active_credential_version_for_task(db, account_id=instance.account_id),
                 external_request_id=(
                     f"oauth-revalidate-{oauth_app.id}-v{oauth_app.active_credential_version}-{token_urlsafe(6)}"
                 ),

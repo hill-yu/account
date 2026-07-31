@@ -241,6 +241,7 @@ class SyncTaskRead(ORMModel):
     task_type: str
     report_date: date
     status: str
+    credential_version: int | None
     external_request_id: str | None
     started_at: datetime | None
     finished_at: datetime | None
@@ -743,12 +744,14 @@ class CollectorRuntimeConfigResponse(BaseModel):
 
 class TaskStatusUpdate(BaseModel):
     status: Literal["in_progress", "succeeded", "failed", "cancelled", "blocked"]
+    credential_version: int | None = None
     message: str | None = None
     failure_class: str | None = None
 
 
 class BatchIngestionRequest(BaseModel):
     batch_key: str
+    credential_version: int | None = None
     row_count: int = 0
     payload_hash: str | None = None
     schema_version: str | None = None

@@ -30,11 +30,11 @@ class FakeControlPlaneClient:
     def heartbeat(self, *, status: str, observed_egress_ip: str) -> None:
         self.heartbeats.append((status, observed_egress_ip))
 
-    def get_next_task(self) -> CollectorTask | None:
+    def get_next_task(self, *, credential_version: int | None = None) -> CollectorTask | None:
         self.next_task_calls += 1
         return self.next_task_result
 
-    def submit_batch(self, task_id: int, batch: FetchBatch) -> None:
+    def submit_batch(self, task_id: int, batch: FetchBatch, *, credential_version: int | None = None) -> None:
         self.batch_callbacks.append((task_id, batch))
 
     def update_task_status(
@@ -43,6 +43,7 @@ class FakeControlPlaneClient:
         status: str,
         message: str | None = None,
         failure_class: str | None = None,
+        credential_version: int | None = None,
     ) -> None:
         self.status_callbacks.append((task_id, status, message))
         self.failure_classes.append((task_id, failure_class))

@@ -111,6 +111,16 @@ def test_healthy_account_with_matching_active_version_is_allowed(policy_db: tupl
     assert policy.hourly_fetch_enabled is True
 
 
+def test_runtime_fetch_requires_an_explicit_credential_version(policy_db: tuple[Session, int]) -> None:
+    db, account_id = policy_db
+
+    with pytest.raises(HTTPException) as exc_info:
+        assert_fetch_allowed(db, account_id=account_id, fetch_kind="batch")
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "FETCH_CREDENTIAL_VERSION_REQUIRED"
+
+
 def test_health_check_allows_migrated_unknown_active_credential(policy_db: tuple[Session, int]) -> None:
     db, account_id = policy_db
     oauth_app = db.query(OAuthAppConfig).filter_by(account_id=account_id).one()

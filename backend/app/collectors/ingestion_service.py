@@ -35,10 +35,11 @@ def ingest_batch(
     )
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
-    service.assert_fetch_allowed(
+    service._assert_task_credential_is_current(
         db,
-        account_id=instance.account_id,
-        fetch_kind="oauth_health_check" if task.task_type == "oauth_health_check" else "batch",
+        instance=instance,
+        task=task,
+        supplied_version=payload.credential_version,
     )
 
     payload_json = json.dumps(payload.rows, separators=(",", ":"), sort_keys=True) if payload.rows is not None else None

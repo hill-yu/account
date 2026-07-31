@@ -20,6 +20,11 @@ BACKEND_DIR = ROOT_DIR / "backend"
 COLLECTOR_DIR = ROOT_DIR / "collector"
 
 
+def _operator_headers() -> dict[str, str]:
+    token = os.environ.get("ADX_COLLECTOR_OPERATOR_API_TOKEN", "virtual-flow-token")
+    return {"X-ADX-Operator-Token": token}
+
+
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -50,6 +55,7 @@ def _create_virtual_entities(base_url: str, db_path: Path) -> tuple[dict[str, An
             "status": "active",
             "external_account_id": "1234567",
         },
+        headers=_operator_headers(),
         timeout=10,
     ).json()
 
@@ -62,6 +68,7 @@ def _create_virtual_entities(base_url: str, db_path: Path) -> tuple[dict[str, An
             "status": "ready",
             "expected_egress_ip": "203.0.113.10",
         },
+        headers=_operator_headers(),
         timeout=10,
     ).json()
 
@@ -79,6 +86,7 @@ def _create_virtual_entities(base_url: str, db_path: Path) -> tuple[dict[str, An
             "expected_egress_ip": "203.0.113.10",
             "status": "active",
         },
+        headers=_operator_headers(),
         timeout=10,
     )
     proxy_response.raise_for_status()
@@ -95,6 +103,7 @@ def _create_virtual_entities(base_url: str, db_path: Path) -> tuple[dict[str, An
             "status": "pending",
             "external_request_id": "virtual-flow-script-run-001",
         },
+        headers=_operator_headers(),
         timeout=10,
     ).json()
 
@@ -163,6 +172,7 @@ def run_virtual_flow() -> dict[str, Any]:
             "ADX_COLLECTOR_DATABASE_URL": f"sqlite:///{db_path.as_posix()}",
             "ADX_COLLECTOR_COLLECTOR_EGRESS_CHECK_URL": "inline://203.0.113.10",
             "ADX_COLLECTOR_ALLOW_STUB_RUNTIME_WITH_MANAGED_CREDENTIALS": "true",
+            "ADX_COLLECTOR_OPERATOR_API_TOKEN": backend_env.get("ADX_COLLECTOR_OPERATOR_API_TOKEN", "virtual-flow-token"),
         }
     )
 
@@ -206,15 +216,19 @@ def run_virtual_flow() -> dict[str, Any]:
             timeout=60,
         )
 
-        task_after = requests.get(f"{base_url}/api/v1/operator/tasks", timeout=10).json()["items"][0]
+        task_after = requests.get(
+            f"{base_url}/api/v1/operator/tasks", headers=_operator_headers(), timeout=10
+        ).json()["items"][0]
         site_daily = requests.get(
             f"{base_url}/api/v1/operator/reports/site-daily",
             params={"account_id": account["id"], "report_date": "2026-05-21"},
+            headers=_operator_headers(),
             timeout=10,
         ).json()["items"]
         account_daily = requests.get(
             f"{base_url}/api/v1/operator/reports/account-daily",
             params={"account_id": account["id"], "report_date": "2026-05-21"},
+            headers=_operator_headers(),
             timeout=10,
         ).json()["items"][0]
 

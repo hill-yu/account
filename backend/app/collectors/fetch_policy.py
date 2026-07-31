@@ -51,6 +51,8 @@ def assert_fetch_allowed(
         _deny("FETCH_POLICY_DAILY_DISABLED")
     if fetch_kind not in MANUAL_FETCH_KINDS | RUNTIME_FETCH_KINDS | {"automatic_hourly", "automatic_daily"}:
         _deny("FETCH_KIND_UNSUPPORTED")
+    if fetch_kind in RUNTIME_FETCH_KINDS and credential_version is None:
+        _deny("FETCH_CREDENTIAL_VERSION_REQUIRED")
 
     if oauth_app.runtime_status != "healthy" or oauth_app.active_credential_version is None:
         _deny("FETCH_OAUTH_NOT_HEALTHY")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, String, text
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -34,6 +34,7 @@ class CollectorSyncTask(Base):
     run_reason: Mapped[str] = mapped_column(String(32), default="preview", nullable=False)
     report_date: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    credential_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     external_request_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

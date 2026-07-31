@@ -11,6 +11,19 @@ from app.models.oauth_credential import OAuthCredential
 from app.models.oauth_event import OAuthEvent
 
 
+TEST_OPERATOR_TOKEN = "test-operator-token"
+
+
+@pytest.fixture(autouse=True)
+def configure_operator_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setenv("ADX_COLLECTOR_OPERATOR_API_TOKEN", TEST_OPERATOR_TOKEN)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def bypass_fetch_policy_for_legacy_tests(
     request: pytest.FixtureRequest,

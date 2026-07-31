@@ -126,6 +126,7 @@ class CollectorTask:
     task_type: str
     report_date: date
     status: str
+    credential_version: int | None = None
     run_reason: str = "preview"
     external_request_id: str | None = None
 
@@ -142,6 +143,7 @@ class CollectorTask:
             run_reason=payload.get("run_reason", "preview"),
             report_date=report_date,
             status=payload["status"],
+            credential_version=payload.get("credential_version"),
             external_request_id=payload.get("external_request_id"),
         )
 
