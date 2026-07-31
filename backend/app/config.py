@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     sql_echo: bool = False
     collector_egress_check_url: str = "https://api.ipify.org"
     operator_remote_report_timeout_seconds: int = 15
+    credential_encryption_key: str | None = None
+    credential_fingerprint_key: str | None = None
 
     model_config = SettingsConfigDict(
         env_prefix="ADX_COLLECTOR_",
