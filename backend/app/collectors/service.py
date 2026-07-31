@@ -48,10 +48,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.types import Integer, Numeric
 
 from app.collectors import schemas
+from app.collectors.fetch_policy import assert_fetch_allowed
 from app.models.account import Account
 from app.models.account_daily_report import AccountDailyReport
 from app.models.account_hourly_report import AccountHourlyReport
 from app.models.collector_instance import CollectorInstance
+from app.models.collector_account_policy import CollectorAccountPolicy
 from app.models.collector_sync_log import CollectorSyncLog
 from app.models.collector_sync_task import CollectorSyncTask
 from app.models.fetch_schedule import FetchSchedule
@@ -175,13 +177,19 @@ def list_gray_daily_fetch_instances(db: Session) -> list[CollectorInstance]:
     return list(
         db.scalars(
             select(CollectorInstance)
-            .where(CollectorInstance.report_account_key.in_(TARGETED_BACKFILL_ACCOUNT_KEYS))
+            .join(CollectorAccountPolicy, CollectorAccountPolicy.account_id == CollectorInstance.account_id)
+            .where(
+                CollectorAccountPolicy.lifecycle_status == "active",
+                CollectorAccountPolicy.gray_enabled.is_(True),
+                CollectorAccountPolicy.authoritative_daily_enabled.is_(True),
+                CollectorAccountPolicy.exclusion_reason.is_(None),
+            )
             .order_by(CollectorInstance.report_account_key.asc(), CollectorInstance.id.asc())
         )
     )
 
 
-def should_skip_automatic_data_fetch(instance: CollectorInstance) -> bool:
+def should_skip_automatic_data_fetch(db: Session, instance: CollectorInstance, *, fetch_kind: str) -> bool:
     """判断一个采集器实例是否应该被自动数据拉取跳过。
 
     跳过条件（满足任一即跳过）：
@@ -192,7 +200,9 @@ def should_skip_automatic_data_fetch(instance: CollectorInstance) -> bool:
     account_key = (instance.report_account_key or "").strip()
     if not account_key:
         return True
-    if account_key in AUTOMATIC_DAILY_FETCH_EXCLUDED_ACCOUNT_KEYS:
+    try:
+        assert_fetch_allowed(db, account_id=instance.account_id, fetch_kind=fetch_kind)
+    except HTTPException:
         return True
     return not _instance_has_runtime_fetch_config(instance)
 
@@ -592,6 +602,7 @@ def trigger_manual_fetch(
     payload: schemas.ManualFetchRequest,
     *,
     timeout_seconds: int,
+    fetch_kind: str = "manual_hourly",
 ) -> schemas.ManualFetchResponse:
     """手动触发一次数据拉取。
 
@@ -613,6 +624,7 @@ def trigger_manual_fetch(
     account = db.get(Account, payload.account_id)
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+    assert_fetch_allowed(db, account_id=payload.account_id, fetch_kind=fetch_kind)
 
     # ── 步骤2: 校验 CollectorInstance ──
     instance = db.get(CollectorInstance, payload.collector_instance_id)
@@ -713,6 +725,7 @@ def create_task(db: Session, payload: schemas.SyncTaskCreate) -> CollectorSyncTa
     account = db.get(Account, payload.account_id)
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+    assert_fetch_allowed(db, account_id=payload.account_id, fetch_kind="operator_task")
 
     instance = db.get(CollectorInstance, payload.collector_instance_id)
     if instance is None:
@@ -1043,12 +1056,31 @@ def trigger_targeted_recent_hourly_backfill(
     4. 为每个有新建任务的实例启动采集器运行时
 
     参数：
-    - account_keys: 要回填的账号列表（不传则使用 TARGETED_BACKFILL_ACCOUNT_KEYS）
+    - account_keys: 要回填的账号列表（不传则从数据库 policy 查询已启用的灰度账号）
     - days: 回填天数
     - anchor_date: 基准日期（默认今天）
     """
     anchor_date = payload.anchor_date or utcnow().date()
-    requested_account_keys = sorted(set(payload.account_keys or TARGETED_BACKFILL_ACCOUNT_KEYS))
+    if payload.account_keys:
+        requested_account_keys = sorted(set(payload.account_keys))
+    else:
+        requested_account_keys = sorted(
+            {
+                account_key
+                for account_key in db.scalars(
+                    select(CollectorInstance.report_account_key)
+                    .join(CollectorAccountPolicy, CollectorAccountPolicy.account_id == CollectorInstance.account_id)
+                    .where(
+                        CollectorAccountPolicy.lifecycle_status == "active",
+                        CollectorAccountPolicy.gray_enabled.is_(True),
+                        CollectorAccountPolicy.hourly_fetch_enabled.is_(True),
+                        CollectorAccountPolicy.exclusion_reason.is_(None),
+                        CollectorInstance.report_account_key.is_not(None),
+                    )
+                )
+                if account_key
+            }
+        )
 
     # 生成回填日期列表（从 anchor_date 往前推 days 天）
     target_dates = [anchor_date - timedelta(days=offset) for offset in range(payload.days, 0, -1)]
@@ -1072,6 +1104,7 @@ def trigger_targeted_recent_hourly_backfill(
         instance = instances_by_key.get(account_key)
         if instance is None:
             continue
+        assert_fetch_allowed(db, account_id=instance.account_id, fetch_kind="targeted_recent")
 
         created_or_reused = False
         for report_date in target_dates:
@@ -2230,6 +2263,7 @@ def build_runtime_config(
     control_plane_base_url: str,
     egress_check_url: str = "https://api.ipify.org",
     request_timeout_seconds: int = 30,
+    allow_stub_runtime_with_managed_credentials: bool = False,
 ) -> schemas.CollectorRuntimeConfigResponse:
     """构建采集器运行时所需的完整配置。
 
@@ -2260,6 +2294,15 @@ def build_runtime_config(
     # 获取 OAuth 配置
     oauth_app = db.scalar(select(OAuthAppConfig).where(OAuthAppConfig.account_id == instance.account_id))
     google_runtime = schemas.CollectorGoogleRuntimeCredentials(fetch_mode="stub")
+
+    if oauth_app is not None:
+        if (
+            allow_stub_runtime_with_managed_credentials
+            and oauth_app.runtime_status == "healthy"
+            and oauth_app.active_credential_version is not None
+            and not oauth_app.refresh_token_present
+        ):
+            oauth_app = None
 
     if oauth_app is not None:
         # 校验 OAuth 授权状态
@@ -2341,6 +2384,7 @@ def claim_next_task(db: Session, instance: CollectorInstance) -> CollectorSyncTa
     - 如果 UPDATE 影响 0 行（被其他进程抢先），返回 None
     - rollback 释放行锁
     """
+    assert_fetch_allowed(db, account_id=instance.account_id, fetch_kind="claim")
     claimed_at = utcnow()
 
     # 查询该实例所有 pending 任务
@@ -2401,6 +2445,7 @@ def update_task_status(
     - 如果 started_at 为空且状态变为 in_progress，自动设置 started_at
     - 如果 payload 中有 message，自动写入 CollectorSyncLog
     """
+    assert_fetch_allowed(db, account_id=instance.account_id, fetch_kind="terminal_status")
     # 反向查询：当前允许的源状态
     source_statuses = allowed_source_statuses(payload.status)
     if not source_statuses:

@@ -27,6 +27,7 @@ def ingest_batch(
     task_id: int,
     payload: schemas.BatchIngestionRequest,
 ) -> tuple[CollectorIngestionBatch, bool]:
+    service.assert_fetch_allowed(db, account_id=instance.account_id, fetch_kind="batch")
     task = db.scalar(
         select(CollectorSyncTask).where(
             CollectorSyncTask.id == task_id,

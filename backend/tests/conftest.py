@@ -10,6 +10,16 @@ from app.models.oauth_credential import OAuthCredential
 from app.models.oauth_event import OAuthEvent
 
 
+@pytest.fixture(autouse=True)
+def bypass_fetch_policy_for_legacy_tests(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    if request.module.__name__.endswith("test_fetch_policy"):
+        return
+
+    from app.collectors import service
+
+    monkeypatch.setattr(service, "assert_fetch_allowed", lambda *args, **kwargs: None)
+
+
 @pytest.fixture()
 def credential_encryption_key() -> str:
     return Fernet.generate_key().decode("ascii")

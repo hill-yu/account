@@ -129,6 +129,7 @@ class FetchScheduler:
                             report_date=local_now.date(),
                         ),
                         timeout_seconds=self._timeout_seconds,
+                        fetch_kind="automatic_hourly",
                     )
                     schedule.last_trigger_status = response.status or ("accepted" if response.ok else "failed")
                     schedule.last_trigger_message = response.message
@@ -155,7 +156,7 @@ class FetchScheduler:
         processed = 0
 
         for instance in service.list_gray_daily_fetch_instances(db):
-            if service.should_skip_automatic_data_fetch(instance):
+            if service.should_skip_automatic_data_fetch(db, instance, fetch_kind="automatic_daily"):
                 continue
 
             account = instance.account

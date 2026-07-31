@@ -359,6 +359,7 @@ def get_collector_runtime_config(
         instance,
         control_plane_base_url=str(request.base_url).rstrip("/"),
         egress_check_url=settings.collector_egress_check_url,
+        allow_stub_runtime_with_managed_credentials=settings.allow_stub_runtime_with_managed_credentials,
     )
 
 

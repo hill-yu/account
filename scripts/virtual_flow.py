@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -41,7 +42,7 @@ def _wait_for_backend(base_url: str, backend_proc: subprocess.Popen[str], timeou
     raise RuntimeError("backend did not become healthy in time")
 
 
-def _create_virtual_entities(base_url: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+def _create_virtual_entities(base_url: str, db_path: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     account = requests.post(
         f"{base_url}/api/v1/operator/accounts",
         json={
@@ -82,6 +83,8 @@ def _create_virtual_entities(base_url: str) -> tuple[dict[str, Any], dict[str, A
     )
     proxy_response.raise_for_status()
 
+    _seed_virtual_fetch_policy(db_path, account_id=account["id"])
+
     task = requests.post(
         f"{base_url}/api/v1/operator/tasks",
         json={
@@ -98,6 +101,57 @@ def _create_virtual_entities(base_url: str) -> tuple[dict[str, Any], dict[str, A
     return account, instance, task
 
 
+def _seed_virtual_fetch_policy(db_path: Path, *, account_id: int) -> None:
+    now = "2026-07-31 00:00:00"
+    with sqlite3.connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO oauth_app_configs (
+                account_id, client_id, client_secret, redirect_uri, scopes,
+                app_status, verification_status, authorization_status,
+                flow_status, runtime_status, active_credential_version,
+                failure_count, publishing_status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_id,
+                "virtual-client-id",
+                "virtual-legacy-client-secret",
+                "https://example.invalid/oauth/google/callback",
+                "https://www.googleapis.com/auth/admanager",
+                "active",
+                "verified",
+                "authorized",
+                "completed",
+                "healthy",
+                1,
+                0,
+                "in_production",
+                now,
+                now,
+            ),
+        )
+        oauth_app_id = int(cursor.lastrowid)
+        connection.execute(
+            """
+            INSERT INTO oauth_credentials (
+                oauth_app_id, version, status, client_secret_ciphertext,
+                refresh_token_ciphertext, token_fingerprint, created_at
+            ) VALUES (?, 1, 'active', ?, ?, ?, ?)
+            """,
+            (oauth_app_id, "virtual-ciphertext", "virtual-refresh-ciphertext", "virtual-fingerprint", now),
+        )
+        connection.execute(
+            """
+            INSERT INTO collector_account_policies (
+                account_id, lifecycle_status, gray_enabled, hourly_fetch_enabled,
+                authoritative_daily_enabled, manual_fetch_enabled, policy_version, updated_at
+            ) VALUES (?, 'active', 1, 1, 1, 1, 1, ?)
+            """,
+            (account_id, now),
+        )
+
+
 def run_virtual_flow() -> dict[str, Any]:
     tmpdir = Path(tempfile.mkdtemp(prefix="adx-virtual-flow-"))
     db_path = tmpdir / "virtual-flow.db"
@@ -108,6 +162,7 @@ def run_virtual_flow() -> dict[str, Any]:
         {
             "ADX_COLLECTOR_DATABASE_URL": f"sqlite:///{db_path.as_posix()}",
             "ADX_COLLECTOR_COLLECTOR_EGRESS_CHECK_URL": "inline://203.0.113.10",
+            "ADX_COLLECTOR_ALLOW_STUB_RUNTIME_WITH_MANAGED_CREDENTIALS": "true",
         }
     )
 
@@ -133,7 +188,7 @@ def run_virtual_flow() -> dict[str, Any]:
 
     try:
         _wait_for_backend(base_url, backend_proc)
-        account, instance, task = _create_virtual_entities(base_url)
+        account, instance, task = _create_virtual_entities(base_url, db_path)
 
         collector_env = os.environ.copy()
         collector_env.update(

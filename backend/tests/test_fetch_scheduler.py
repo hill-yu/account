@@ -14,6 +14,7 @@ from app.main import create_app
 from app.models.account import Account
 from app.models.account_daily_report import AccountDailyReport
 from app.models.collector_instance import CollectorInstance
+from app.models.collector_account_policy import CollectorAccountPolicy
 from app.models.collector_sync_task import CollectorSyncTask
 from app.models.fetch_schedule import FetchSchedule
 from app.collectors import service as collectors_service
@@ -137,7 +138,9 @@ def test_scheduler_triggers_due_schedule_and_updates_state(
         payload,
         *,
         timeout_seconds: int,
+        fetch_kind: str,
     ):
+        assert fetch_kind == "automatic_hourly"
         return collectors_service.schemas.ManualFetchResponse(
             ok=True,
             status="accepted",
@@ -187,6 +190,7 @@ def test_scheduler_only_creates_daily_fetch_for_gray_accounts(
         account_name="non-gray-account",
         instance_name="non-gray-instance",
         report_account_key="not-in-gray",
+        gray_enabled=False,
     )
 
     monkeypatch.setattr(
@@ -393,6 +397,8 @@ def test_scheduler_skips_accounts_marked_as_do_not_fetch(
         account_name="blocked-account",
         instance_name="blocked-instance",
         report_account_key="arongtala",
+        gray_enabled=False,
+        exclusion_reason="manual",
     )
 
     monkeypatch.setattr(
@@ -434,6 +440,8 @@ def _create_account_with_instance(
     account_name: str,
     instance_name: str,
     report_account_key: str,
+    gray_enabled: bool = True,
+    exclusion_reason: str | None = None,
 ) -> tuple[int, int]:
     with session_factory() as session:
         account = Account(
@@ -453,5 +461,16 @@ def _create_account_with_instance(
             report_token=f"report-token-{instance_name}",
         )
         session.add(instance)
+        session.add(
+            CollectorAccountPolicy(
+                account_id=account.id,
+                lifecycle_status="active",
+                gray_enabled=gray_enabled and exclusion_reason is None,
+                hourly_fetch_enabled=gray_enabled and exclusion_reason is None,
+                authoritative_daily_enabled=gray_enabled and exclusion_reason is None,
+                manual_fetch_enabled=exclusion_reason is None,
+                exclusion_reason=exclusion_reason,
+            )
+        )
         session.commit()
         return account.id, instance.id
