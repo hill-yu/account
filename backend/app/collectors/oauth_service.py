@@ -148,6 +148,28 @@ def _raise_oauth_conflict(code: str) -> None:
     )
 
 
+def _resolve_oauth_client_secret(
+    db: Session,
+    *,
+    oauth_app: OAuthAppConfig,
+    cipher: CredentialCipher,
+) -> str:
+    if oauth_app.client_secret:
+        return oauth_app.client_secret
+    if oauth_app.active_credential_version is None:
+        _raise_oauth_conflict("OAUTH_CLIENT_SECRET_UNAVAILABLE")
+    active = db.scalar(
+        select(OAuthCredential).where(
+            OAuthCredential.oauth_app_id == oauth_app.id,
+            OAuthCredential.version == oauth_app.active_credential_version,
+            OAuthCredential.status == "active",
+        )
+    )
+    if active is None:
+        _raise_oauth_conflict("OAUTH_CLIENT_SECRET_UNAVAILABLE")
+    return cipher.decrypt(active.client_secret_ciphertext)
+
+
 def handle_google_callback(db: Session, state: str, code: str) -> schemas.OAuthCallbackResponse:
     oauth_app = _consume_pending_oauth_app_state(db, state=state)
     return _exchange_authorization_code(db, oauth_app=oauth_app, code=code)
@@ -226,6 +248,8 @@ def _exchange_authorization_code(
     code: str,
 ) -> schemas.OAuthCallbackResponse:
     now = utcnow()
+    cipher = _credential_cipher()
+    client_secret = _resolve_oauth_client_secret(db, oauth_app=oauth_app, cipher=cipher)
 
     try:
         response = requests.post(
@@ -233,7 +257,7 @@ def _exchange_authorization_code(
             data={
                 "code": code,
                 "client_id": oauth_app.client_id,
-                "client_secret": oauth_app.client_secret,
+                "client_secret": client_secret,
                 "redirect_uri": oauth_app.redirect_uri,
                 "grant_type": "authorization_code",
             },
@@ -298,12 +322,11 @@ def _exchange_authorization_code(
         .where(OAuthCredential.oauth_app_id == oauth_app.id, OAuthCredential.status == "staged")
         .values(status="rejected", retired_at=now)
     )
-    cipher = _credential_cipher()
     staged = OAuthCredential(
         oauth_app_id=oauth_app.id,
         version=next_version,
         status="staged",
-        client_secret_ciphertext=cipher.encrypt(oauth_app.client_secret),
+        client_secret_ciphertext=cipher.encrypt(client_secret),
         refresh_token_ciphertext=cipher.encrypt(str(refresh_token)),
         token_fingerprint=cipher.fingerprint(str(refresh_token)),
         granted_scopes=str(token_payload.get("scope") or oauth_app.scopes),
@@ -432,6 +455,12 @@ def acknowledge_credential_validation(
     oauth_app.failure_class = None
     oauth_app.failure_count = 0
     oauth_app.next_action = "run_oauth_health_check"
+    oauth_app.client_secret = ""
+    oauth_app.refresh_token = None
+    oauth_app.refresh_token_updated_at = None
+    oauth_app.access_token = None
+    oauth_app.access_token_expires_at = None
+    oauth_app.token_type = None
     account.timezone = payload.network_timezone
     task.status = "succeeded"
     task.finished_at = now

@@ -533,6 +533,7 @@ def test_credential_ack_activates_exact_staged_version_and_creates_health_task(d
     assert oauth_app.pending_credential_version is None
     assert oauth_app.runtime_status == "degraded"
     assert oauth_app.flow_status == "completed"
+    assert oauth_app.client_secret == ""
     assert account.timezone == "America/New_York"
     assert db_session.query(OAuthCredential).filter_by(oauth_app_id=oauth_app.id, version=1).one().status == "retired"
     assert db_session.query(OAuthCredential).filter_by(oauth_app_id=oauth_app.id, version=2).one().status == "active"
