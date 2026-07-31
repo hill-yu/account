@@ -2300,13 +2300,13 @@ def build_runtime_config(
             allow_stub_runtime_with_managed_credentials
             and oauth_app.runtime_status == "healthy"
             and oauth_app.active_credential_version is not None
-            and not oauth_app.refresh_token_present
+            and not oauth_app.refresh_token
         ):
             oauth_app = None
 
     if oauth_app is not None:
         # 校验 OAuth 授权状态
-        if oauth_app.authorization_status != "authorized" or not oauth_app.refresh_token_present:
+        if oauth_app.authorization_status != "authorized" or not oauth_app.refresh_token:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="OAuth app is not authorized for runtime fetch",

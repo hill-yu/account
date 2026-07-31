@@ -239,16 +239,16 @@ def test_operator_can_create_list_and_authorize_oauth_apps(client: TestClient, m
     assert callback.json() == {
         "oauth_app_id": oauth_app_id,
         "account_id": account_id,
-        "authorization_status": "authorized",
+        "authorization_status": "validation_pending",
         "refresh_token_present": True,
     }
 
     list_after_callback = client.get("/api/v1/operator/oauth-apps")
     assert list_after_callback.status_code == 200
     oauth_item = list_after_callback.json()["items"][0]
-    assert oauth_item["authorization_status"] == "authorized"
+    assert oauth_item["authorization_status"] == "validation_pending"
     assert oauth_item["refresh_token_present"] is True
-    assert oauth_item["access_token_expires_at"] is not None
+    assert oauth_item["access_token_expires_at"] is None
 
     create_instance = client.post(
         "/api/v1/operator/instances",
@@ -283,15 +283,8 @@ def test_operator_can_create_list_and_authorize_oauth_apps(client: TestClient, m
         "/api/v1/collector/runtime-config",
         headers={"Authorization": "Bearer oauth-instance-token"},
     )
-    assert runtime_config.status_code == 200
-    assert runtime_config.headers["cache-control"] == "no-store"
-    assert runtime_config.json()["google"] == {
-        "fetch_mode": "admanager_soap",
-        "admanager_network_code": "ext-oauth",
-        "google_oauth_client_id": "google-client-id",
-        "google_oauth_client_secret": "google-client-secret",
-        "google_oauth_refresh_token": "refresh-token-router",
-    }
+    assert runtime_config.status_code == 409
+    assert runtime_config.json()["detail"] == "OAuth app is not authorized for runtime fetch"
 
 
 def test_google_callback_rejects_unknown_oauth_state(client: TestClient) -> None:
@@ -365,7 +358,7 @@ def test_operator_can_import_callback_json(client: TestClient, monkeypatch: pyte
     assert response.json() == {
         "oauth_app_id": oauth_app_id,
         "account_id": account_id,
-        "authorization_status": "authorized",
+        "authorization_status": "validation_pending",
         "refresh_token_present": True,
     }
 

@@ -53,8 +53,12 @@ def list_oauth_apps(db: Session = Depends(get_db)) -> schemas.OAuthAppList:
 
 
 @router.post("/operator/oauth-apps/{oauth_app_id}/authorization-url", response_model=schemas.AuthorizationUrlResponse)
-def generate_oauth_authorization_url(oauth_app_id: int, db: Session = Depends(get_db)) -> schemas.AuthorizationUrlResponse:
-    return oauth_service.generate_authorization_url(db, oauth_app_id)
+def generate_oauth_authorization_url(
+    oauth_app_id: int,
+    payload: schemas.AuthorizationUrlRequest | None = None,
+    db: Session = Depends(get_db),
+) -> schemas.AuthorizationUrlResponse:
+    return oauth_service.generate_authorization_url(db, oauth_app_id, payload)
 
 
 @router.post("/operator/oauth-apps/import-callback-json", response_model=schemas.OAuthCallbackResponse)

@@ -5,19 +5,31 @@ from collections.abc import Callable
 import pytest
 from cryptography.fernet import Fernet
 
+from app.collectors.credential_crypto import CredentialCipher
 from app.models.collector_account_policy import CollectorAccountPolicy
 from app.models.oauth_credential import OAuthCredential
 from app.models.oauth_event import OAuthEvent
 
 
 @pytest.fixture(autouse=True)
-def bypass_fetch_policy_for_legacy_tests(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+def bypass_fetch_policy_for_legacy_tests(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    credential_encryption_key: str,
+    credential_fingerprint_key: str,
+) -> None:
     if request.module.__name__.endswith("test_fetch_policy"):
         return
 
     from app.collectors import service
+    from app.collectors import oauth_service
 
     monkeypatch.setattr(service, "assert_fetch_allowed", lambda *args, **kwargs: None)
+    cipher = CredentialCipher(
+        encryption_key=credential_encryption_key,
+        fingerprint_key=credential_fingerprint_key,
+    )
+    monkeypatch.setattr(oauth_service, "_credential_cipher", lambda: cipher)
 
 
 @pytest.fixture()

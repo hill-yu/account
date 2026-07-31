@@ -75,6 +75,11 @@ class AuthorizationUrlResponse(BaseModel):
     state_expires_at: datetime
 
 
+class AuthorizationUrlRequest(BaseModel):
+    force_reauthorize: bool = False
+    reason: str | None = None
+
+
 class OAuthCallbackResponse(BaseModel):
     oauth_app_id: int
     account_id: int

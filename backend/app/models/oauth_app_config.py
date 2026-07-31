@@ -53,4 +53,4 @@ class OAuthAppConfig(Base):
 
     @property
     def refresh_token_present(self) -> bool:
-        return bool(self.refresh_token)
+        return bool(self.refresh_token or self.active_credential_version or self.pending_credential_version)
