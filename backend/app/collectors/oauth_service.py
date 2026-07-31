@@ -12,6 +12,12 @@ from sqlalchemy.orm import Session
 
 from app.collectors import schemas, service
 from app.collectors.credential_crypto import CredentialCipher
+from app.collectors.oauth_errors import (
+    OAuthFailure,
+    classify_oauth_error,
+    oauth_contract_failure,
+    oauth_transport_failure,
+)
 from app.config import get_settings
 from app.models.account import Account
 from app.models.oauth_app_config import OAuthAppConfig
@@ -231,39 +237,36 @@ def _exchange_authorization_code(
             timeout=30,
         )
     except requests.RequestException as exc:
-        oauth_app.authorization_status = "authorization_failed"
-        oauth_app.flow_status = "exchange_failed"
-        oauth_app.authorization_state = None
-        oauth_app.authorization_state_expires_at = None
-        oauth_app.authorization_error = "OAUTH_TOKEN_EXCHANGE_TRANSPORT"
-        _record_event(
-            db,
-            oauth_app=oauth_app,
-            event_type="token_exchange_failed",
-            failure_class="oauth_transport",
-        )
-        db.add(oauth_app)
-        db.commit()
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="OAuth token exchange failed") from exc
+        failure = oauth_transport_failure(timeout=isinstance(exc, requests.Timeout))
+        _persist_exchange_failure(db, oauth_app=oauth_app, failure=failure)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="OAuth token exchange failed") from None
 
     if response.status_code != status.HTTP_200_OK:
-        oauth_app.authorization_status = "authorization_failed"
-        oauth_app.flow_status = "exchange_failed"
-        oauth_app.authorization_state = None
-        oauth_app.authorization_state_expires_at = None
-        oauth_app.authorization_error = "OAUTH_TOKEN_EXCHANGE_REJECTED"
-        _record_event(
-            db,
-            oauth_app=oauth_app,
-            event_type="token_exchange_failed",
-            failure_class="oauth_exchange_rejected",
+        try:
+            error_payload = response.json()
+        except (TypeError, ValueError):
+            error_payload = {}
+        error = error_payload.get("error") if isinstance(error_payload, dict) else None
+        error_subtype = error_payload.get("error_subtype") if isinstance(error_payload, dict) else None
+        failure = classify_oauth_error(
+            grant_type="authorization_code",
+            error=error if isinstance(error, str) else None,
+            error_subtype=error_subtype if isinstance(error_subtype, str) else None,
             http_status=response.status_code,
         )
-        db.add(oauth_app)
-        db.commit()
+        _persist_exchange_failure(db, oauth_app=oauth_app, failure=failure)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth token exchange failed")
 
-    token_payload = response.json()
+    try:
+        token_payload = response.json()
+    except (TypeError, ValueError):
+        failure = oauth_contract_failure(http_status=response.status_code)
+        _persist_exchange_failure(db, oauth_app=oauth_app, failure=failure)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="OAuth token exchange failed") from None
+    if not isinstance(token_payload, dict):
+        failure = oauth_contract_failure(http_status=response.status_code)
+        _persist_exchange_failure(db, oauth_app=oauth_app, failure=failure)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="OAuth token exchange failed")
     refresh_token = token_payload.get("refresh_token")
     if not refresh_token:
         oauth_app.authorization_status = "authorization_failed"
@@ -343,6 +346,28 @@ def _credential_cipher() -> CredentialCipher:
         encryption_key=settings.credential_encryption_key,
         fingerprint_key=settings.credential_fingerprint_key,
     )
+
+
+def _persist_exchange_failure(
+    db: Session,
+    *,
+    oauth_app: OAuthAppConfig,
+    failure: OAuthFailure,
+) -> None:
+    oauth_app.authorization_status = "authorization_failed"
+    oauth_app.flow_status = "exchange_failed"
+    oauth_app.authorization_state = None
+    oauth_app.authorization_state_expires_at = None
+    oauth_app.authorization_error = failure.failure_class
+    _record_event(
+        db,
+        oauth_app=oauth_app,
+        event_type="token_exchange_failed",
+        failure_class=failure.failure_class,
+        http_status=failure.http_status,
+    )
+    db.add(oauth_app)
+    db.commit()
 
 
 def _record_event(

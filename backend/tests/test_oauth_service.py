@@ -378,6 +378,8 @@ def test_failed_healthy_reauthorization_preserves_active_credential(
     assert oauth_app.active_credential_version == 1
     assert db_session.query(OAuthCredential).filter_by(oauth_app_id=oauth_app.id, status="active").count() == 1
     assert "must-not-be-stored" not in (oauth_app.authorization_error or "")
+    failed_event = db_session.query(OAuthEvent).filter_by(event_type="token_exchange_failed").one()
+    assert failed_event.failure_class == "oauth_code_invalid"
 
 
 def test_oauth_events_do_not_store_callback_secrets(
