@@ -23,9 +23,10 @@ def test_soap_report_definition_builds_expected_query() -> None:
     query = definition.build_report_query(task_id=7, report_date=date(2026, 6, 3))
 
     assert query == {
-        "dimensions": ["DATE_PT", "SITE_NAME"],
+        "dimensions": ["DATE", "SITE_NAME"],
         "columns": [
             "AD_EXCHANGE_RESPONSES_SERVED",
+            "AD_EXCHANGE_TOTAL_REQUESTS",
             "AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS",
             "AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS",
             "AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE",
@@ -34,7 +35,7 @@ def test_soap_report_definition_builds_expected_query() -> None:
         "dateRangeType": "CUSTOM_DATE",
         "startDate": {"year": 2026, "month": 6, "day": 3},
         "endDate": {"year": 2026, "month": 6, "day": 3},
-        "timeZoneType": "PACIFIC",
+        "timeZoneType": "PUBLISHER",
     }
 
 
@@ -44,9 +45,10 @@ def test_hourly_soap_report_definition_builds_expected_query() -> None:
     query = definition.build_report_query(task_id=7, report_date=date(2026, 6, 3))
 
     assert query == {
-        "dimensions": ["DATE_PT", "HOUR", "SITE_NAME"],
+        "dimensions": ["DATE_PT", "HOUR", "SITE_NAME", "COUNTRY_CODE", "AD_UNIT_ID"],
         "columns": [
             "AD_EXCHANGE_RESPONSES_SERVED",
+            "AD_EXCHANGE_TOTAL_REQUESTS",
             "AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS",
             "AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS",
             "AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE",
@@ -60,9 +62,9 @@ def test_hourly_soap_report_definition_builds_expected_query() -> None:
 
 
 def test_parse_report_csv_normalizes_adx_url_rows() -> None:
-    raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-03,jane.ghfkl.com,1000,950,15,12345678,12995450
-2026-06-03,longan.ghfkl.com,800,760,8,4250000,5592105
+    raw_csv = """Dimension.DATE,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_TOTAL_REQUESTS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
+2026-06-03,jane.ghfkl.com,1000,1200,950,15,12345678,12995450
+2026-06-03,longan.ghfkl.com,800,900,760,8,4250000,5592105
 """
 
     rows = parse_report_csv(raw_csv, report_date=date(2026, 6, 3))
@@ -73,6 +75,7 @@ def test_parse_report_csv_normalizes_adx_url_rows() -> None:
             "url_id": "jane.ghfkl.com",
             "url": "jane.ghfkl.com",
             "responses_served": 1000,
+            "requests": 1200,
             "impressions": 950,
             "clicks": 15,
             "revenue": "12.345678",
@@ -83,6 +86,7 @@ def test_parse_report_csv_normalizes_adx_url_rows() -> None:
             "url_id": "longan.ghfkl.com",
             "url": "longan.ghfkl.com",
             "responses_served": 800,
+            "requests": 900,
             "impressions": 760,
             "clicks": 8,
             "revenue": "4.250000",
@@ -92,9 +96,9 @@ def test_parse_report_csv_normalizes_adx_url_rows() -> None:
 
 
 def test_parse_hourly_report_csv_normalizes_hourly_rows() -> None:
-    raw_csv = """Dimension.DATE_PT,Dimension.HOUR,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-03,16,jane.ghfkl.com,1000,950,15,12345678,12995450
-2026-06-03,17,longan.ghfkl.com,800,760,8,4250000,5592105
+    raw_csv = """Dimension.DATE_PT,Dimension.HOUR,Dimension.SITE_NAME,Dimension.COUNTRY_CODE,Dimension.AD_UNIT_ID,Dimension.AD_UNIT_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_TOTAL_REQUESTS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
+2026-06-03,16,jane.ghfkl.com,US,slot-1,Top Banner,1000,1200,950,15,12345678,12995450
+2026-06-03,17,longan.ghfkl.com,CA,slot-2,Side Rail,800,900,760,8,4250000,5592105
 """
 
     rows = parse_hourly_report_csv(raw_csv, report_date=date(2026, 6, 3))
@@ -106,7 +110,12 @@ def test_parse_hourly_report_csv_normalizes_hourly_rows() -> None:
             "source_timezone": "America/Los_Angeles",
             "url_id": "jane.ghfkl.com",
             "url": "jane.ghfkl.com",
+            "ad_country_code": "US",
+            "ad_country_name": "US",
+            "ad_slot_id": "slot-1",
+            "ad_slot_name": "Top Banner",
             "responses_served": 1000,
+            "requests": 1200,
             "impressions": 950,
             "clicks": 15,
             "revenue": "12.345678",
@@ -118,7 +127,12 @@ def test_parse_hourly_report_csv_normalizes_hourly_rows() -> None:
             "source_timezone": "America/Los_Angeles",
             "url_id": "longan.ghfkl.com",
             "url": "longan.ghfkl.com",
+            "ad_country_code": "CA",
+            "ad_country_name": "CA",
+            "ad_slot_id": "slot-2",
+            "ad_slot_name": "Side Rail",
             "responses_served": 800,
+            "requests": 900,
             "impressions": 760,
             "clicks": 8,
             "revenue": "4.250000",
@@ -128,8 +142,8 @@ def test_parse_hourly_report_csv_normalizes_hourly_rows() -> None:
 
 
 def test_parse_report_csv_rejects_mismatched_row_date() -> None:
-    raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-02,jane.ghfkl.com,1000,950,15,12345678,12995450
+    raw_csv = """Dimension.DATE,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_TOTAL_REQUESTS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
+2026-06-02,jane.ghfkl.com,1000,1200,950,15,12345678,12995450
 """
 
     with pytest.raises(ValueError, match="Unexpected Ad Manager report row date"):
@@ -137,8 +151,8 @@ def test_parse_report_csv_rejects_mismatched_row_date() -> None:
 
 
 def test_parse_report_csv_rejects_invalid_integer_values() -> None:
-    raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-03,jane.ghfkl.com,1.9,950,15,12345678,12995450
+    raw_csv = """Dimension.DATE,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_TOTAL_REQUESTS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
+2026-06-03,jane.ghfkl.com,1.9,1200,950,15,12345678,12995450
 """
 
     with pytest.raises(ValueError, match="Invalid integer cell value"):
@@ -155,8 +169,8 @@ def test_parse_report_csv_rejects_missing_required_columns() -> None:
 
 
 def test_parse_report_csv_rejects_truncated_rows() -> None:
-    raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-03,jane.ghfkl.com,1000,950,15,12345678,
+    raw_csv = """Dimension.DATE,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_TOTAL_REQUESTS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
+2026-06-03,jane.ghfkl.com,1000,1200,950,15,12345678,
 """
 
     with pytest.raises(ValueError, match="Missing required decimal cell value"):
@@ -164,8 +178,8 @@ def test_parse_report_csv_rejects_truncated_rows() -> None:
 
 
 def test_parse_report_csv_supports_comma_formatted_numeric_input() -> None:
-    raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-03,jane.ghfkl.com,"1,000","950","15","12,345,678","12,995,450"
+    raw_csv = """Dimension.DATE,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_TOTAL_REQUESTS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
+2026-06-03,jane.ghfkl.com,"1,000","1,200","950","15","12,345,678","12,995,450"
 """
 
     rows = parse_report_csv(raw_csv, report_date=date(2026, 6, 3))
@@ -176,6 +190,7 @@ def test_parse_report_csv_supports_comma_formatted_numeric_input() -> None:
             "url_id": "jane.ghfkl.com",
             "url": "jane.ghfkl.com",
             "responses_served": 1000,
+            "requests": 1200,
             "impressions": 950,
             "clicks": 15,
             "revenue": "12.345678",
@@ -185,8 +200,8 @@ def test_parse_report_csv_supports_comma_formatted_numeric_input() -> None:
 
 
 def test_parse_report_csv_rejects_non_finite_decimal_values() -> None:
-    raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-06-03,jane.ghfkl.com,1000,950,15,NaN,12995450
+    raw_csv = """Dimension.DATE,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_TOTAL_REQUESTS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
+2026-06-03,jane.ghfkl.com,1000,1200,950,15,NaN,12995450
 """
 
     with pytest.raises(ValueError, match="Invalid decimal cell value"):
@@ -194,8 +209,8 @@ def test_parse_report_csv_rejects_non_finite_decimal_values() -> None:
 
 
 def test_parse_report_csv_normalizes_real_micros_values() -> None:
-    raw_csv = """Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
-2026-05-14,jane.ghfkl.com,34,33,4,7646800,231721203
+    raw_csv = """Dimension.DATE,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_TOTAL_REQUESTS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
+2026-05-14,jane.ghfkl.com,34,40,33,4,7646800,231721203
 """
 
     rows = parse_report_csv(raw_csv, report_date=date(2026, 5, 14))
@@ -206,6 +221,7 @@ def test_parse_report_csv_normalizes_real_micros_values() -> None:
             "url_id": "jane.ghfkl.com",
             "url": "jane.ghfkl.com",
             "responses_served": 34,
+            "requests": 40,
             "impressions": 33,
             "clicks": 4,
             "revenue": "7.646800",
@@ -242,8 +258,8 @@ class FakeDownloader:
             )
         )
         outfile.write(
-            b"Dimension.DATE_PT,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM\n"
-            b"2026-06-03,jane.ghfkl.com,1000,950,15,12345678,12995450\n"
+            b"Dimension.DATE,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_TOTAL_REQUESTS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM\n"
+            b"2026-06-03,jane.ghfkl.com,1000,1200,950,15,12345678,12995450\n"
         )
 
 
@@ -267,8 +283,8 @@ class FakeHourlyDownloader(FakeDownloader):
             )
         )
         outfile.write(
-            b"Dimension.DATE_PT,Dimension.HOUR,Dimension.SITE_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM\n"
-            b"2026-06-03,16,jane.ghfkl.com,1000,950,15,12345678,12995450\n"
+            b"Dimension.DATE_PT,Dimension.HOUR,Dimension.SITE_NAME,Dimension.COUNTRY_CODE,Dimension.AD_UNIT_ID,Dimension.AD_UNIT_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_TOTAL_REQUESTS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM\n"
+            b"2026-06-03,16,jane.ghfkl.com,US,slot-1,Top Banner,1000,1200,950,15,12345678,12995450\n"
         )
 
 
@@ -292,6 +308,7 @@ def test_admanager_soap_client_downloads_and_parses_rows() -> None:
             "url_id": "jane.ghfkl.com",
             "url": "jane.ghfkl.com",
             "responses_served": 1000,
+            "requests": 1200,
             "impressions": 950,
             "clicks": 15,
             "revenue": "12.345678",
@@ -330,7 +347,12 @@ def test_admanager_soap_client_downloads_and_parses_hourly_rows() -> None:
             "source_timezone": "America/Los_Angeles",
             "url_id": "jane.ghfkl.com",
             "url": "jane.ghfkl.com",
+            "ad_country_code": "US",
+            "ad_country_name": "US",
+            "ad_slot_id": "slot-1",
+            "ad_slot_name": "Top Banner",
             "responses_served": 1000,
+            "requests": 1200,
             "impressions": 950,
             "clicks": 15,
             "revenue": "12.345678",

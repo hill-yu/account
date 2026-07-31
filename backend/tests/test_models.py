@@ -23,6 +23,8 @@ EXPECTED_TABLES = {
     "collector_sync_tasks",
     "collector_sync_logs",
     "collector_ingestion_batches",
+    "fetch_schedules",
+    "account_report_day_statuses",
 }
 
 

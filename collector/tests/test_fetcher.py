@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from app.adx_report_service import AdxHourlyReportRow
 from app.fetcher import AdManagerSoapReportFetcher
 from app.models import CollectorTask, FetchBatch
 from app.proxy import ProxyConfig
@@ -28,10 +29,39 @@ class FakeSoapService:
 
     def fetch_site_hourly_report(self, *, report_date: date, task_id: int = 1):
         self.hourly_calls.append((report_date, task_id))
-        return ["hourly-row"]
+        return [
+            AdxHourlyReportRow(
+                report_date=report_date.isoformat(),
+                hour=16,
+                source_timezone="America/Los_Angeles",
+                site_name="example.com",
+                ad_country_code="US",
+                ad_country_name="US",
+                ad_slot_id="slot-1",
+                ad_slot_name="Top Banner",
+                responses_served=10,
+                requests=12,
+                impressions=8,
+                clicks=1,
+                revenue="1.000000",
+                ecpm="125.000000",
+            )
+        ]
 
-    def build_hourly_fetch_batch(self, *, rows, batch_key: str = "page-1"):
-        assert rows == ["hourly-row"]
+    def build_hourly_fetch_batch(
+        self,
+        *,
+        rows,
+        batch_key: str = "page-1",
+        merge_mode: str = "append",
+        touched_hours: list[int] | None = None,
+        expected_hour_count: int | None = None,
+    ):
+        assert len(rows) == 1
+        assert rows[0].source_timezone == "America/Los_Angeles"
+        assert merge_mode == "replace_touched_hours"
+        assert touched_hours
+        assert expected_hour_count == 24
         return FetchBatch(
             batch_key=batch_key,
             row_count=1,

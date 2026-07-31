@@ -219,7 +219,7 @@ def test_scheduler_creates_daily_fetch_tasks_for_recent_three_days(
         session_factory,
         account_name="three-day-account",
         instance_name="three-day-instance",
-        report_account_key="caians",
+        report_account_key="reboroots",
     )
 
     monkeypatch.setattr(
@@ -249,7 +249,7 @@ def test_scheduler_creates_daily_fetch_tasks_for_recent_three_days(
     assert [task.report_date for task in tasks] == [date(2026, 7, 9), date(2026, 7, 10), date(2026, 7, 11)]
 
 
-def test_scheduler_skips_existing_daily_report_rows(
+def test_scheduler_does_not_treat_derived_daily_rows_as_authoritative_fetches(
     session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -257,7 +257,7 @@ def test_scheduler_skips_existing_daily_report_rows(
         session_factory,
         account_name="existing-daily-account",
         instance_name="existing-daily-instance",
-        report_account_key="caians",
+        report_account_key="reboroots",
     )
     with session_factory() as session:
         session.add(
@@ -296,7 +296,7 @@ def test_scheduler_skips_existing_daily_report_rows(
             )
         )
 
-    assert [task.report_date for task in tasks] == [date(2026, 7, 9), date(2026, 7, 11)]
+    assert [task.report_date for task in tasks] == [date(2026, 7, 9), date(2026, 7, 10), date(2026, 7, 11)]
 
 
 def test_scheduler_skips_when_active_daily_fetch_task_exists(
@@ -307,7 +307,7 @@ def test_scheduler_skips_when_active_daily_fetch_task_exists(
         session_factory,
         account_name="active-daily-account",
         instance_name="active-daily-instance",
-        report_account_key="caians",
+        report_account_key="reboroots",
     )
     with session_factory() as session:
         session.add(
@@ -356,7 +356,7 @@ def test_scheduler_skips_dates_not_ready_for_authoritative_daily(
         session_factory,
         account_name="not-ready-account",
         instance_name="not-ready-instance",
-        report_account_key="caians",
+        report_account_key="reboroots",
     )
 
     monkeypatch.setattr(
@@ -392,7 +392,7 @@ def test_scheduler_skips_accounts_marked_as_do_not_fetch(
         session_factory,
         account_name="blocked-account",
         instance_name="blocked-instance",
-        report_account_key="domeband",
+        report_account_key="arongtala",
     )
 
     monkeypatch.setattr(

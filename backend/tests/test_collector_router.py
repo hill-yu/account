@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app import models as _models  # noqa: F401
 from app.database import Base, get_db
 from app.main import create_app
+from app.models.account_daily_report import AccountDailyReport
 from app.models.account_hourly_report import AccountHourlyReport
 from app.models.site_daily_report import SiteDailyReport
 from app.models.site_hourly_report import SiteHourlyReport
@@ -684,6 +685,40 @@ def test_operator_can_generate_remote_site_daily_report(client: TestClient, monk
         },
     ).json()
 
+    db: Session = client.app.dependency_overrides[get_db]().__next__()
+    try:
+        db.add_all(
+            [
+                SiteDailyReport(
+                    account_id=account_one["id"],
+                    report_date=date(2026, 5, 14),
+                    url_id="alpha.example.com",
+                    url="alpha.example.com",
+                    responses_served=100,
+                    requests=0,
+                    impressions=80,
+                    clicks=3,
+                    revenue=Decimal("2.500000"),
+                    ecpm=Decimal("31.250000"),
+                ),
+                SiteDailyReport(
+                    account_id=account_one["id"],
+                    report_date=date(2026, 5, 14),
+                    url_id="beta.example.com",
+                    url="beta.example.com",
+                    responses_served=50,
+                    requests=0,
+                    impressions=40,
+                    clicks=1,
+                    revenue=Decimal("1.000000"),
+                    ecpm=Decimal("25.000000"),
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
     def fake_get(url: str, params: dict[str, str], timeout: int) -> DummyHttpxResponse:
         assert timeout == 15
         if url == "https://node-a.example.com/ke/report.php":
@@ -742,6 +777,11 @@ def test_operator_can_generate_remote_site_daily_report(client: TestClient, monk
         raise AssertionError(f"unexpected url {url}")
 
     monkeypatch.setattr(service.httpx, "get", fake_get)
+    monkeypatch.setattr(
+        service.httpx,
+        "get",
+        lambda *args, **kwargs: pytest.fail("local authoritative daily endpoint must not call node snapshots"),
+    )
 
     response = client.get("/api/v1/operator/mid-platform/reports/site-daily", params={"report_date": "2026-05-14"})
     assert response.status_code == 200
@@ -750,9 +790,9 @@ def test_operator_can_generate_remote_site_daily_report(client: TestClient, monk
 
     assert body["summary"] == {
         "report_date": "2026-05-14",
-        "requested_node_count": 2,
+        "requested_node_count": 1,
         "success_node_count": 1,
-        "no_snapshot_node_count": 1,
+        "no_snapshot_node_count": 0,
         "error_node_count": 0,
         "row_count": 2,
         "total_responses_served": 150,
@@ -777,7 +817,7 @@ def test_operator_can_generate_remote_site_daily_report(client: TestClient, monk
             "clicks": 3,
             "revenue": 2.5,
             "ecpm": 31.25,
-            "source_run_id": 41,
+            "source_run_id": None,
         },
         {
             "account_id": account_one["id"],
@@ -794,7 +834,7 @@ def test_operator_can_generate_remote_site_daily_report(client: TestClient, monk
             "clicks": 1,
             "revenue": 1.0,
             "ecpm": 25.0,
-            "source_run_id": 41,
+            "source_run_id": None,
         },
     ]
     assert body["node_results"] == [
@@ -807,21 +847,8 @@ def test_operator_can_generate_remote_site_daily_report(client: TestClient, monk
             "node_account_key": "a1",
             "source_state": "success",
             "source_http_status": 200,
-            "source_run_id": 41,
-            "row_count": 2,
-            "message": None,
-        },
-        {
-            "account_id": account_two["id"],
-            "account_name": "account-remote-b",
-            "instance_id": instance_two["id"],
-            "instance_name": "collector-remote-b",
-            "node_base_url": "https://node-b.example.com",
-            "node_account_key": "b1",
-            "source_state": "no_snapshot",
-            "source_http_status": 200,
             "source_run_id": None,
-            "row_count": 0,
+            "row_count": 2,
             "message": None,
         },
     ]
@@ -851,6 +878,54 @@ def test_operator_can_generate_remote_account_daily_report(client: TestClient, m
             "report_token": "token-sum-a",
         },
     )
+
+    db: Session = client.app.dependency_overrides[get_db]().__next__()
+    try:
+        db.add_all(
+            [
+                AccountDailyReport(
+                    account_id=account_one["id"],
+                    report_date=date(2026, 5, 15),
+                    responses_served=50,
+                    requests=0,
+                    impressions=39,
+                    clicks=3,
+                    revenue=Decimal("1.500000"),
+                    ecpm=Decimal("38.461538"),
+                ),
+                AccountDailyReport(
+                    account_id=account_two["id"],
+                    report_date=date(2026, 5, 15),
+                    responses_served=10,
+                    requests=0,
+                    impressions=10,
+                    clicks=0,
+                    revenue=Decimal("0.250000"),
+                    ecpm=Decimal("25.000000"),
+                ),
+                SiteDailyReport(
+                    account_id=account_one["id"],
+                    report_date=date(2026, 5, 15),
+                    url_id="summary-a-1.example.com",
+                    url="summary-a-1.example.com",
+                ),
+                SiteDailyReport(
+                    account_id=account_one["id"],
+                    report_date=date(2026, 5, 15),
+                    url_id="summary-a-2.example.com",
+                    url="summary-a-2.example.com",
+                ),
+                SiteDailyReport(
+                    account_id=account_two["id"],
+                    report_date=date(2026, 5, 15),
+                    url_id="summary-b-1.example.com",
+                    url="summary-b-1.example.com",
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
     client.post(
         "/api/v1/operator/instances",
         json={
@@ -922,6 +997,11 @@ def test_operator_can_generate_remote_account_daily_report(client: TestClient, m
         return DummyHttpxResponse(200, payload_map[url])
 
     monkeypatch.setattr(service.httpx, "get", fake_get)
+    monkeypatch.setattr(
+        service.httpx,
+        "get",
+        lambda *args, **kwargs: pytest.fail("local authoritative daily endpoint must not call node snapshots"),
+    )
 
     response = client.get("/api/v1/operator/mid-platform/reports/account-daily", params={"report_date": "2026-05-15"})
     assert response.status_code == 200
@@ -957,7 +1037,7 @@ def test_operator_can_generate_remote_account_daily_report(client: TestClient, m
             "clicks": 3,
             "revenue": 1.5,
             "ecpm": 38.461538,
-            "source_run_id": 52,
+            "source_run_id": None,
         },
         {
             "account_id": account_two["id"],
@@ -974,7 +1054,7 @@ def test_operator_can_generate_remote_account_daily_report(client: TestClient, m
             "clicks": 0,
             "revenue": 0.25,
             "ecpm": 25.0,
-            "source_run_id": 53,
+            "source_run_id": None,
         },
     ]
 
@@ -1749,7 +1829,7 @@ def test_targeted_recent_backfill_creates_tasks_for_target_accounts(
     monkeypatch.setattr(service, "_launch_hourly_sync_runtime", lambda instance: launched_instances.append(instance.id))
 
     created_instance_ids: list[int] = []
-    for account_key in ["lfmtmt", "bjsulide", "nnppw", "other"]:
+    for account_key in ["cpatobe", "cdqjsy", "ddgjcj", "other"]:
         account = client.post(
             "/api/v1/operator/accounts",
             json={"name": f"account-{account_key}", "external_account_id": f"net-{account_key}", "status": "active"},
@@ -1772,15 +1852,19 @@ def test_targeted_recent_backfill_creates_tasks_for_target_accounts(
 
     response = client.post(
         "/api/v1/operator/hourly-backfill/targeted-recent",
-        json={"anchor_date": "2026-07-07", "days": 4},
+        json={
+            "account_keys": ["cpatobe", "cdqjsy", "ddgjcj"],
+            "anchor_date": "2026-07-07",
+            "days": 4,
+        },
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["requested_account_keys"] == ["bjsulide", "lfmtmt", "nnppw"]
+    assert body["requested_account_keys"] == ["cdqjsy", "cpatobe", "ddgjcj"]
     assert body["days"] == 4
     assert len(body["items"]) == 12
-    assert {item["account_key"] for item in body["items"]} == {"lfmtmt", "bjsulide", "nnppw"}
+    assert {item["account_key"] for item in body["items"]} == {"cpatobe", "cdqjsy", "ddgjcj"}
     assert {item["report_date"] for item in body["items"]} == {"2026-07-03", "2026-07-04", "2026-07-05", "2026-07-06"}
     assert all(item["hourly_sync_task_status"] == "pending" for item in body["items"])
     assert all(item["hourly_sync_task_created"] is True for item in body["items"])

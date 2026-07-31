@@ -332,6 +332,13 @@ def test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups
         "max_hour": 9,
         "is_complete_day": False,
         "latest_task_id": 1,
+        "daily_revenue": 2.0,
+        "hourly_revenue": 2.0,
+        "revenue_diff_percent": 0.0,
+        "daily_impressions": 100,
+        "hourly_impressions": 100,
+        "impressions_diff_percent": 0.0,
+        "is_value_match": True,
     }
 
     account_daily = test_client.get(
