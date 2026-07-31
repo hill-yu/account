@@ -147,6 +147,20 @@ class FetchScheduler:
                 )
                 processed += 1
 
+            recovery_task = service.enqueue_next_oauth_recovery_gap(db, now=now)
+            if recovery_task is not None:
+                recovery_instance = recovery_task.collector_instance
+                # The collector runs in a separate process and must be able to
+                # see the task before it starts claiming work.
+                db.commit()
+                try:
+                    service._launch_hourly_sync_runtime(recovery_instance)
+                except Exception:  # noqa: BLE001
+                    recovery_task.status = "failed"
+                    recovery_task.finished_at = now
+                    db.commit()
+                processed += 1
+
             processed += self._enqueue_due_authoritative_daily_fetches(db, now)
             db.commit()
 

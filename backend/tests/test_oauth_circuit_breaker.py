@@ -188,7 +188,16 @@ def test_successful_health_check_restores_only_invalid_grant_snapshot(tmp_path: 
     assert schedule.mode == "interval_hours"
     assert schedule.interval_hours == 4
     assert schedule.next_run_at is not None
-    assert db.query(CollectorSyncTask).filter_by(task_type="report_fetch_hourly", status="pending").count() == 1
+    assert db.query(CollectorSyncTask).filter_by(task_type="report_fetch_hourly", status="pending").count() == 0
+    assert db.query(OAuthEvent).filter_by(event_type="oauth_gap_scan_requested").count() == 1
+
+    recovery_task = service.enqueue_next_oauth_recovery_gap(
+        db,
+        now=datetime(2026, 7, 31, 12, 0, tzinfo=UTC),
+    )
+    assert recovery_task is not None
+    assert recovery_task.task_type == "report_fetch_hourly"
+    assert recovery_task.run_reason == "oauth_recovery"
 
 
 def test_health_recovery_does_not_clear_manual_stop(tmp_path: Path) -> None:

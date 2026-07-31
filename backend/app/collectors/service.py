@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -54,6 +55,7 @@ from app.config import get_settings
 from app.models.account import Account
 from app.models.account_daily_report import AccountDailyReport
 from app.models.account_hourly_report import AccountHourlyReport
+from app.models.account_report_day_status import AccountReportDayStatus
 from app.models.collector_instance import CollectorInstance
 from app.models.collector_account_policy import CollectorAccountPolicy
 from app.models.collector_sync_log import CollectorSyncLog
@@ -76,6 +78,7 @@ TERMINAL_TASK_STATUSES = {"succeeded", "failed", "cancelled"}
 
 # 活跃任务状态集合 — 还在进行中的任务
 ACTIVE_SYNC_TASK_STATUSES = {"pending", "in_progress"}
+ACTIVE_RECOVERY_TASK_STATUSES = {"pending", "in_progress", "blocked"}
 SAFE_OAUTH_FAILURE_CLASSES = {
     "oauth_code_invalid",
     "oauth_refresh_revoked",
@@ -288,6 +291,197 @@ def has_successful_authoritative_daily_fetch(
 # ============================================================================
 # 超时任务处理
 # ============================================================================
+
+@dataclass(frozen=True)
+class OAuthRecoveryGap:
+    account_id: int
+    collector_instance_id: int
+    task_type: str
+    report_date: date
+    reason: str
+
+
+def _as_aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _has_complete_hourly_day(
+    db: Session,
+    *,
+    account_id: int,
+    report_date: date,
+    timezone_name: str,
+) -> bool:
+    manifest = db.scalar(
+        select(AccountReportDayStatus).where(
+            AccountReportDayStatus.account_id == account_id,
+            AccountReportDayStatus.report_date == report_date,
+            AccountReportDayStatus.source_timezone == timezone_name,
+        )
+    )
+    if manifest is not None and manifest.is_complete_day:
+        return True
+    coverage = build_hourly_coverage(db, account_id=account_id, report_date=report_date)
+    return bool(coverage is not None and coverage.is_complete_day)
+
+
+def _gap_task_exists(
+    db: Session,
+    *,
+    account_id: int,
+    task_type: str,
+    report_date: date,
+) -> bool:
+    return (
+        db.scalar(
+            select(CollectorSyncTask.id).where(
+                CollectorSyncTask.account_id == account_id,
+                CollectorSyncTask.task_type == task_type,
+                CollectorSyncTask.report_date == report_date,
+                (
+                    (CollectorSyncTask.run_reason == "oauth_recovery")
+                    | CollectorSyncTask.status.in_(ACTIVE_RECOVERY_TASK_STATUSES)
+                ),
+            )
+        )
+        is not None
+    )
+
+
+def scan_oauth_recovery_gaps(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    lookback_days: int = 3,
+) -> list[OAuthRecoveryGap]:
+    """Return real data gaps only for accounts that completed OAuth recovery."""
+    if lookback_days < 1:
+        raise ValueError("lookback_days must be positive")
+    current_now = _as_aware_utc(now or utcnow())
+    requested_account_ids = select(OAuthEvent.account_id).where(
+        OAuthEvent.event_type == "oauth_gap_scan_requested"
+    )
+    rows = db.execute(
+        select(Account, CollectorInstance, CollectorAccountPolicy, OAuthAppConfig)
+        .join(CollectorInstance, CollectorInstance.account_id == Account.id)
+        .join(CollectorAccountPolicy, CollectorAccountPolicy.account_id == Account.id)
+        .join(OAuthAppConfig, OAuthAppConfig.account_id == Account.id)
+        .where(
+            Account.id.in_(requested_account_ids),
+            Account.status == "active",
+            CollectorAccountPolicy.lifecycle_status == "active",
+            CollectorAccountPolicy.gray_enabled.is_(True),
+            CollectorAccountPolicy.exclusion_reason.is_(None),
+            OAuthAppConfig.runtime_status == "healthy",
+        )
+        .order_by(Account.id)
+    ).all()
+    hourly_gaps: list[OAuthRecoveryGap] = []
+    daily_gaps: list[OAuthRecoveryGap] = []
+    for account, instance, policy, _oauth_app in rows:
+        timezone_name = account.timezone or DEFAULT_REPORT_TIMEZONE
+        local_date = current_now.astimezone(ZoneInfo(timezone_name)).date()
+        candidate_dates = [local_date - timedelta(days=offset) for offset in range(lookback_days, -1, -1)]
+
+        if policy.hourly_fetch_enabled:
+            for report_date in candidate_dates:
+                if _gap_task_exists(
+                    db,
+                    account_id=account.id,
+                    task_type="report_fetch_hourly",
+                    report_date=report_date,
+                ):
+                    continue
+                if report_date == local_date:
+                    latest_watermark = db.scalar(
+                        select(func.max(AccountHourlyReport.report_time_utc)).where(
+                            AccountHourlyReport.account_id == account.id
+                        )
+                    )
+                    if latest_watermark is not None and _as_aware_utc(latest_watermark) >= current_now - timedelta(hours=1):
+                        continue
+                    reason = "utc_watermark_lag"
+                else:
+                    if _has_complete_hourly_day(
+                        db,
+                        account_id=account.id,
+                        report_date=report_date,
+                        timezone_name=timezone_name,
+                    ):
+                        continue
+                    reason = "incomplete_hourly_coverage"
+                hourly_gaps.append(
+                    OAuthRecoveryGap(
+                        account_id=account.id,
+                        collector_instance_id=instance.id,
+                        task_type="report_fetch_hourly",
+                        report_date=report_date,
+                        reason=reason,
+                    )
+                )
+
+        if policy.authoritative_daily_enabled:
+            for report_date in candidate_dates:
+                if not is_authoritative_daily_ready(
+                    report_date=report_date,
+                    timezone_name=timezone_name,
+                    now=current_now,
+                ):
+                    continue
+                if has_successful_authoritative_daily_fetch(db, account_id=account.id, report_date=report_date):
+                    continue
+                if _gap_task_exists(
+                    db,
+                    account_id=account.id,
+                    task_type="report_fetch",
+                    report_date=report_date,
+                ):
+                    continue
+                daily_gaps.append(
+                    OAuthRecoveryGap(
+                        account_id=account.id,
+                        collector_instance_id=instance.id,
+                        task_type="report_fetch",
+                        report_date=report_date,
+                        reason="authoritative_daily_missing",
+                    )
+                )
+    return hourly_gaps + daily_gaps
+
+
+def enqueue_next_oauth_recovery_gap(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    lookback_days: int = 3,
+) -> CollectorSyncTask | None:
+    active_recovery = db.scalar(
+        select(CollectorSyncTask.id).where(
+            CollectorSyncTask.run_reason == "oauth_recovery",
+            CollectorSyncTask.status.in_(ACTIVE_RECOVERY_TASK_STATUSES),
+        )
+    )
+    if active_recovery is not None:
+        return None
+    gaps = scan_oauth_recovery_gaps(db, now=now, lookback_days=lookback_days)
+    if not gaps:
+        return None
+    gap = gaps[0]
+    task = CollectorSyncTask(
+        account_id=gap.account_id,
+        collector_instance_id=gap.collector_instance_id,
+        task_type=gap.task_type,
+        run_reason="oauth_recovery",
+        report_date=gap.report_date,
+        status="pending",
+        external_request_id=f"oauth-recovery-{gap.task_type}-{gap.account_id}-{gap.report_date.isoformat()}",
+    )
+    db.add(task)
+    db.flush()
+    return task
+
 
 def fail_stale_in_progress_tasks(
     db: Session,
@@ -2854,23 +3048,6 @@ def _recover_oauth_after_health_check(db: Session, *, oauth_app: OAuthAppConfig,
         schedule.next_run_at = now + timedelta(minutes=5 + (account_id * 17) % 50)
         schedule.last_trigger_status = "recovered"
         schedule.last_trigger_message = "oauth_health_check_succeeded"
-        account = db.get(Account, account_id)
-        instance = db.scalar(select(CollectorInstance).where(CollectorInstance.account_id == account_id))
-        if account is not None and instance is not None:
-            latest_local_date = datetime.now(ZoneInfo(account.timezone or DEFAULT_REPORT_TIMEZONE)).date()
-            if _find_active_hourly_sync_task(db, account_id=account_id, report_date=latest_local_date) is None:
-                db.add(
-                    CollectorSyncTask(
-                        account_id=account_id,
-                        collector_instance_id=instance.id,
-                        task_type="report_fetch_hourly",
-                        report_date=latest_local_date,
-                        status="pending",
-                        external_request_id=(
-                            f"oauth-gap-hourly-{account_id}-{latest_local_date.isoformat()}-{token_urlsafe(6)}"
-                        ),
-                    )
-                )
     db.add_all(
         [
             OAuthEvent(
