@@ -2,6 +2,8 @@ export type AccountStatus = "pending" | "active" | "disabled";
 export type AppStatus = "pending" | "active" | "disabled";
 export type VerificationStatus = "pending" | "verified" | "rejected";
 export type AuthorizationStatus = "pending" | "authorized" | "expired" | "revoked" | "failed";
+export type OAuthFlowStatus = "pending" | "requested" | "validation_pending" | "completed" | "exchange_failed";
+export type OAuthRuntimeStatus = "unknown" | "healthy" | "degraded" | "revoked" | "policy_blocked" | "migration_required";
 export type InstanceStatus = "provisioning" | "ready" | "blocked" | "offline";
 export type ProxyStatus = "active" | "disabled" | "error";
 export type SyncTaskStatus = "pending" | "in_progress" | "succeeded" | "failed" | "cancelled" | "blocked";
@@ -37,6 +39,17 @@ export interface OAuthAppRead {
   app_status: AppStatus | string;
   verification_status: VerificationStatus | string;
   authorization_status: AuthorizationStatus | string;
+  flow_status: OAuthFlowStatus | string;
+  runtime_status: OAuthRuntimeStatus | string;
+  active_credential_version: number | null;
+  pending_credential_version: number | null;
+  credential_fingerprint: string | null;
+  failure_class: string | null;
+  failure_count: number;
+  last_verified_at: string | null;
+  revoked_at: string | null;
+  publishing_status: string;
+  next_action: string | null;
   authorization_requested_at: string | null;
   authorization_completed_at: string | null;
   access_token_expires_at: string | null;
@@ -65,6 +78,11 @@ export interface AuthorizationUrlResponse {
   authorization_url: string;
   state: string;
   state_expires_at: string;
+}
+
+export interface AuthorizationUrlRequest {
+  force_reauthorize?: boolean;
+  reason?: string | null;
 }
 
 export interface OAuthCallbackResponse {

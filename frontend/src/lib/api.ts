@@ -2,6 +2,7 @@ import type {
   AccountCreate,
   AccountDailyReportList,
   AccountList,
+  AuthorizationUrlRequest,
   AuthorizationUrlResponse,
   FetchScheduleCreate,
   FetchScheduleList,
@@ -98,9 +99,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  generateAuthorizationUrl: (oauthAppId: number) =>
+  generateAuthorizationUrl: (oauthAppId: number, payload?: AuthorizationUrlRequest) =>
     request<AuthorizationUrlResponse>(`/api/v1/operator/oauth-apps/${oauthAppId}/authorization-url`, {
       method: "POST",
+      body: payload ? JSON.stringify(payload) : undefined,
     }),
   completeOAuthCallback: (state: string, code: string) =>
     request<OAuthCallbackResponse>(

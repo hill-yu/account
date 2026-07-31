@@ -13,6 +13,8 @@ import {
   buildOAuthJsonImportHint,
   buildOAuthRedirectUriHint,
   buildSecondAccountChecklist,
+  getOAuthAuthorizationAction,
+  shortenCredentialFingerprint,
 } from "../../lib/operatorGuidance";
 import type { AccountRead, AuthorizationUrlResponse, OAuthAppRead, OAuthCallbackImportRequest } from "../../types/api";
 
@@ -66,10 +68,31 @@ export function OAuthAppsSection({
     }
   };
 
-  const handleGenerate = async (oauthAppId: number) => {
-    setGeneratingId(oauthAppId);
+  const handleGenerate = async (oauthApp: OAuthAppRead) => {
+    const action = getOAuthAuthorizationAction(oauthApp.flow_status, oauthApp.runtime_status);
+    if (action.disabled) {
+      return;
+    }
+    let reason: string | undefined;
+    if (action.requiresConfirmation) {
+      const confirmed = window.confirm("Reauthorizing can replace the current credential. Continue?");
+      if (!confirmed) {
+        return;
+      }
+      reason = window.prompt("Reason for reauthorization")?.trim() || undefined;
+      if (!reason) {
+        pushToast({ title: "Reauthorization reason required", tone: "error" });
+        return;
+      }
+    } else if (action.forceReauthorize) {
+      reason = "restore_revoked_credential";
+    }
+    setGeneratingId(oauthApp.id);
     try {
-      const result = await api.generateAuthorizationUrl(oauthAppId);
+      const result = await api.generateAuthorizationUrl(
+        oauthApp.id,
+        action.forceReauthorize ? { force_reauthorize: true, reason } : undefined,
+      );
       setGeneratedUrl(result);
       pushToast({ title: "Authorization URL generated", tone: "success" });
     } catch (error) {
@@ -286,42 +309,55 @@ export function OAuthAppsSection({
               <thead>
                 <tr>
                   <th>ID</th>
-                  <th>Account</th>
-                  <th>Client ID</th>
-                  <th>Redirect URI</th>
-                  <th>Authorization</th>
-                  <th>Refresh Token</th>
+                  <th>Account / App</th>
+                  <th>Flow</th>
+                  <th>Runtime</th>
+                  <th>Credential</th>
+                  <th>Failure</th>
+                  <th>Verified</th>
+                  <th>Next action</th>
                   <th>Action</th>
                 </tr>
               </thead>
               <tbody>
-                {oauthApps.map((oauthApp) => (
-                  <tr key={oauthApp.id}>
-                    <td>{oauthApp.id}</td>
-                    <td>{oauthApp.account_id}</td>
-                    <td>{oauthApp.client_id}</td>
-                    <td>
-                      <div>{oauthApp.redirect_uri}</div>
-                    </td>
-                    <td>
-                      <StatusBadge value={oauthApp.authorization_status} />
-                    </td>
-                    <td>{oauthApp.refresh_token_present ? "Present" : "Missing"}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => void handleGenerate(oauthApp.id)}
-                        disabled={generatingId === oauthApp.id}
-                      >
-                        {generatingId === oauthApp.id ? "Generating..." : "Generate URL"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {oauthApps.map((oauthApp) => {
+                  const action = getOAuthAuthorizationAction(oauthApp.flow_status, oauthApp.runtime_status);
+                  const credentialVersion = oauthApp.active_credential_version ?? oauthApp.pending_credential_version;
+                  return (
+                    <tr key={oauthApp.id}>
+                      <td>{oauthApp.id}</td>
+                      <td>
+                        <div>{oauthApp.account_id} / {oauthApp.client_id}</div>
+                        <div className="token-meta">{oauthApp.redirect_uri}</div>
+                      </td>
+                      <td><StatusBadge value={oauthApp.flow_status} /></td>
+                      <td><StatusBadge value={oauthApp.runtime_status} /></td>
+                      <td>
+                        <div>{credentialVersion === null ? "-" : `v${credentialVersion}`}</div>
+                        <div className="token-meta">{shortenCredentialFingerprint(oauthApp.credential_fingerprint)}</div>
+                      </td>
+                      <td>
+                        <div>{oauthApp.failure_class ?? "-"}</div>
+                        {oauthApp.failure_count ? <div className="token-meta">Count: {oauthApp.failure_count}</div> : null}
+                      </td>
+                      <td>{formatDateTime(oauthApp.last_verified_at)}</td>
+                      <td>{oauthApp.next_action ?? "-"}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => void handleGenerate(oauthApp)}
+                          disabled={action.disabled || generatingId === oauthApp.id}
+                        >
+                          {generatingId === oauthApp.id ? "Generating..." : action.label}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
                 {oauthApps.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="empty-cell">
+                    <td colSpan={9} className="empty-cell">
                       No OAuth apps yet. Create one per account and verify the redirect URI before authorizing.
                     </td>
                   </tr>

@@ -42,8 +42,26 @@ def utcnow() -> datetime:
     return datetime.utcnow()
 
 
-def list_oauth_apps(db: Session) -> list[OAuthAppConfig]:
-    return list(db.scalars(select(OAuthAppConfig).order_by(OAuthAppConfig.id)))
+def list_oauth_apps(db: Session) -> list[schemas.OAuthAppRead]:
+    oauth_apps = list(db.scalars(select(OAuthAppConfig).order_by(OAuthAppConfig.id)))
+    credentials = list(
+        db.scalars(
+            select(OAuthCredential).where(OAuthCredential.status.in_(("active", "staged")))
+        )
+    )
+    credentials_by_version = {
+        (credential.oauth_app_id, credential.version): credential
+        for credential in credentials
+    }
+    items: list[schemas.OAuthAppRead] = []
+    for oauth_app in oauth_apps:
+        visible_version = oauth_app.active_credential_version or oauth_app.pending_credential_version
+        credential = credentials_by_version.get((oauth_app.id, visible_version)) if visible_version is not None else None
+        item = schemas.OAuthAppRead.model_validate(oauth_app).model_copy(
+            update={"credential_fingerprint": credential.token_fingerprint if credential is not None else None}
+        )
+        items.append(item)
+    return items
 
 
 def create_oauth_app(db: Session, payload: schemas.OAuthAppCreate) -> OAuthAppConfig:

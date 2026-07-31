@@ -19,3 +19,39 @@ export function buildSecondAccountChecklist(): string[] {
 export function buildOAuthJsonImportHint(): string {
   return "Upload the callback JSON in the control plane operator flow only. user_system must not host or proxy this onboarding step.";
 }
+
+export interface OAuthAuthorizationAction {
+  label: string;
+  disabled: boolean;
+  forceReauthorize: boolean;
+  requiresConfirmation: boolean;
+}
+
+export function getOAuthAuthorizationAction(
+  flowStatus: string,
+  runtimeStatus: string,
+): OAuthAuthorizationAction {
+  if (flowStatus === "validation_pending") {
+    return { label: "Validation pending", disabled: true, forceReauthorize: false, requiresConfirmation: false };
+  }
+  if (flowStatus === "requested") {
+    return { label: "Authorization requested", disabled: true, forceReauthorize: false, requiresConfirmation: false };
+  }
+  if (runtimeStatus === "degraded") {
+    return { label: "Health check running", disabled: true, forceReauthorize: false, requiresConfirmation: false };
+  }
+  if (runtimeStatus === "policy_blocked") {
+    return { label: "Resolve policy", disabled: true, forceReauthorize: false, requiresConfirmation: false };
+  }
+  if (runtimeStatus === "revoked") {
+    return { label: "Restore authorization", disabled: false, forceReauthorize: true, requiresConfirmation: false };
+  }
+  if (runtimeStatus === "healthy") {
+    return { label: "Reauthorize", disabled: false, forceReauthorize: true, requiresConfirmation: true };
+  }
+  return { label: "Generate URL", disabled: false, forceReauthorize: false, requiresConfirmation: false };
+}
+
+export function shortenCredentialFingerprint(fingerprint: string | null): string {
+  return fingerprint ? fingerprint.slice(0, 12) : "-";
+}

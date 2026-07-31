@@ -55,6 +55,17 @@ class OAuthAppRead(ORMModel):
     app_status: str
     verification_status: str
     authorization_status: str
+    flow_status: str
+    runtime_status: str
+    active_credential_version: int | None
+    pending_credential_version: int | None
+    credential_fingerprint: str | None = None
+    failure_class: str | None
+    failure_count: int
+    last_verified_at: datetime | None
+    revoked_at: datetime | None
+    publishing_status: str
+    next_action: str | None
     authorization_requested_at: datetime | None
     authorization_completed_at: datetime | None
     access_token_expires_at: datetime | None

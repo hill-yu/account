@@ -424,6 +424,41 @@ def test_oauth_events_do_not_store_callback_secrets(
     assert "secret-refresh" not in serialized
 
 
+def test_oauth_list_exposes_managed_health_without_secret_fields(db_session: Session) -> None:
+    oauth_app = create_account_with_oauth_app(db_session)
+    oauth_app.flow_status = "completed"
+    oauth_app.runtime_status = "degraded"
+    oauth_app.active_credential_version = 4
+    oauth_app.failure_class = "oauth_provider_unavailable"
+    oauth_app.failure_count = 2
+    oauth_app.next_action = "run_oauth_health_check"
+    db_session.add(
+        OAuthCredential(
+            oauth_app_id=oauth_app.id,
+            version=4,
+            status="active",
+            client_secret_ciphertext="must-not-be-returned-client-secret",
+            refresh_token_ciphertext="must-not-be-returned-refresh-token",
+            token_fingerprint="1234567890abcdef1234567890abcdef",
+        )
+    )
+    db_session.commit()
+
+    result = oauth_service.list_oauth_apps(db_session)
+
+    assert len(result) == 1
+    serialized = result[0].model_dump()
+    assert serialized["flow_status"] == "completed"
+    assert serialized["runtime_status"] == "degraded"
+    assert serialized["active_credential_version"] == 4
+    assert serialized["credential_fingerprint"] == "1234567890abcdef1234567890abcdef"
+    assert serialized["failure_class"] == "oauth_provider_unavailable"
+    assert serialized["failure_count"] == 2
+    assert serialized["next_action"] == "run_oauth_health_check"
+    assert "client_secret" not in serialized
+    assert "refresh_token" not in serialized
+
+
 def test_import_google_callback_payload_rejects_redirect_uri_mismatch(db_session: Session) -> None:
     oauth_app = create_account_with_oauth_app(db_session)
     pending_authorization = oauth_service.generate_authorization_url(db_session, oauth_app.id)
