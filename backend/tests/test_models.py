@@ -25,6 +25,9 @@ EXPECTED_TABLES = {
     "collector_ingestion_batches",
     "fetch_schedules",
     "account_report_day_statuses",
+    "oauth_credentials",
+    "collector_account_policies",
+    "oauth_events",
 }
 
 

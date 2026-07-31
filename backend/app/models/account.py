@@ -23,6 +23,8 @@ class Account(Base):
     )
 
     oauth_app_config = relationship("OAuthAppConfig", back_populates="account", uselist=False)
+    collector_policy = relationship("CollectorAccountPolicy", back_populates="account", uselist=False)
+    oauth_events = relationship("OAuthEvent", back_populates="account")
     collector_instance = relationship("CollectorInstance", back_populates="account", uselist=False)
     fetch_schedule = relationship("FetchSchedule", back_populates="account", uselist=False, overlaps="collector_instance")
     proxy_binding = relationship("ProxyBinding", back_populates="account", uselist=False)
