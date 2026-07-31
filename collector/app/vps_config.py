@@ -20,6 +20,7 @@ class VpsApiSettings(BaseSettings):
     request_timeout_seconds: int = 30
     egress_check_url: str = "https://api.ipify.org"
     trigger_token: str = Field(default="", validation_alias="ADX_TRIGGER_TOKEN")
+    direct_collector_only: bool = Field(default=True, validation_alias="ADX_DIRECT_COLLECTOR_ONLY")
 
     model_config = SettingsConfigDict(
         env_prefix="ADX_VPS_",

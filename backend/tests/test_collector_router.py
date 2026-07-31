@@ -1437,7 +1437,10 @@ def test_operator_enabling_fetch_schedule_recomputes_next_run_at(client: TestCli
     assert next_run_at.astimezone(UTC) >= datetime.now(UTC)
 
 
-def test_manual_fetch_calls_real_fetch_php(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_manual_fetch_uses_direct_collector_without_calling_fetch_php(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.collectors import service
 
     create_account = client.post(
@@ -1453,33 +1456,15 @@ def test_manual_fetch_calls_real_fetch_php(client: TestClient, monkeypatch: pyte
             "name": "collector-manual-fetch",
             "instance_token": "token-manual-fetch",
             "status": "ready",
-            "report_base_url": "https://node.example.com",
-            "report_account_key": "jwtnx",
-            "report_token": "token-jwtnx",
         },
     )
     instance_id = create_instance.json()["id"]
 
-    def fake_get(url: str, params: dict[str, str], timeout: int) -> DummyHttpxResponse:
-        assert url == "https://node.example.com/ke/fetch.php"
-        assert params == {
-            "account_key": "jwtnx",
-            "report_date": "2026-06-23",
-            "token": "token-jwtnx",
-        }
-        assert timeout == 15
-        return DummyHttpxResponse(
-            200,
-            {
-                "ok": True,
-                "status": "accepted",
-                "run_id": 88,
-                "request_id": "req-jwtnx",
-                "message": "queued",
-            },
-        )
-
-    monkeypatch.setattr(service.httpx, "get", fake_get)
+    monkeypatch.setattr(
+        service.httpx,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("/ke/fetch.php must not be called")),
+    )
     launched_instances: list[tuple[int, str]] = []
 
     def fake_launch_hourly_sync_runtime(instance) -> None:
@@ -1497,16 +1482,15 @@ def test_manual_fetch_calls_real_fetch_php(client: TestClient, monkeypatch: pyte
     )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "ok": True,
-        "status": "accepted",
-        "run_id": 88,
-        "request_id": "req-jwtnx",
-        "message": "queued",
-        "hourly_sync_task_id": 1,
-        "hourly_sync_task_status": "pending",
-        "hourly_sync_task_created": True,
-    }
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["status"] == "pending"
+    assert payload["run_id"] is None
+    assert payload["request_id"].startswith("direct-hourly-")
+    assert payload["message"] == "queued for direct collector"
+    assert payload["hourly_sync_task_id"] == 1
+    assert payload["hourly_sync_task_status"] == "pending"
+    assert payload["hourly_sync_task_created"] is True
 
     tasks_response = client.get("/api/v1/operator/tasks")
     assert tasks_response.status_code == 200
@@ -1518,7 +1502,7 @@ def test_manual_fetch_calls_real_fetch_php(client: TestClient, monkeypatch: pyte
             "task_type": "report_fetch_hourly",
             "report_date": "2026-06-23",
             "status": "pending",
-            "external_request_id": "req-jwtnx",
+            "external_request_id": payload["request_id"],
             "started_at": None,
             "finished_at": None,
             "created_at": tasks_response.json()["items"][0]["created_at"],
@@ -1649,7 +1633,13 @@ def test_manual_fetch_reuses_existing_hourly_sync_task(
     assert launched_instances == [instance_id]
 
 
-def test_manual_fetch_rejects_instance_without_report_config(client: TestClient) -> None:
+def test_manual_fetch_rejects_instance_without_report_config(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "direct_collector_only", False)
     create_account = client.post(
         "/api/v1/operator/accounts",
         json={"name": "account-manual-missing", "external_account_id": "net-manual-missing", "status": "active"},
@@ -2030,6 +2020,9 @@ def test_operator_fetch_schedule_create_rejects_account_instance_mismatch(client
 
 def test_manual_fetch_rejects_remote_ok_false(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.collectors import service
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "direct_collector_only", False)
 
     create_account = client.post(
         "/api/v1/operator/accounts",
@@ -2079,6 +2072,9 @@ def test_manual_fetch_rejects_remote_ok_false(client: TestClient, monkeypatch: p
 
 def test_manual_fetch_rejects_remote_non_200(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.collectors import service
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "direct_collector_only", False)
 
     create_account = client.post(
         "/api/v1/operator/accounts",
@@ -2120,6 +2116,9 @@ def test_manual_fetch_rejects_remote_non_200(client: TestClient, monkeypatch: py
 
 def test_manual_fetch_rejects_remote_invalid_json(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.collectors import service
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "direct_collector_only", False)
 
     create_account = client.post(
         "/api/v1/operator/accounts",

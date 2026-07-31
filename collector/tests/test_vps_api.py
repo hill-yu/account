@@ -344,6 +344,7 @@ def test_internal_fetch_endpoint_rejects_overlong_request_fields() -> None:
 
 def test_public_fetch_endpoint_returns_php_compatible_payload(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("ADX_TRIGGER_TOKEN", "public-token")
+    monkeypatch.setenv("ADX_DIRECT_COLLECTOR_ONLY", "false")
 
     from app.vps_config import get_vps_settings
     from app.vps_api import create_app
@@ -387,6 +388,29 @@ def test_public_fetch_endpoint_returns_php_compatible_payload(monkeypatch: Monke
     assert payload["row_count"] == 0
     assert payload["run_id"] == 17
     assert payload["request_id"].startswith("req_")
+
+
+def test_public_fetch_endpoint_is_disabled_by_default(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("ADX_DIRECT_COLLECTOR_ONLY", raising=False)
+
+    from app.vps_config import get_vps_settings
+    from app.vps_api import create_app
+
+    get_vps_settings.cache_clear()
+    app = create_app(fetch_service=FakeFetchService())
+    client = TestClient(app)
+
+    response = client.get(
+        "/public/fetch.php",
+        params={"token": "anything", "account_key": "a1", "report_date": "2026-06-03"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "ok": False,
+        "error_code": "FETCH_PATH_DISABLED",
+        "message": "legacy public fetch path is disabled",
+    }
 
 
 def test_public_report_endpoint_rejects_invalid_token(monkeypatch: MonkeyPatch) -> None:

@@ -3,6 +3,17 @@ declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
 
+$directOnlyValue = strtolower(trim(getenv('ADX_DIRECT_COLLECTOR_ONLY') ?: 'true'));
+if (!in_array($directOnlyValue, ['0', 'false', 'no', 'off'], true)) {
+    http_response_code(409);
+    echo json_encode([
+        'ok' => false,
+        'error_code' => 'FETCH_PATH_DISABLED',
+        'message' => 'legacy public fetch path is disabled',
+    ], JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
 $token = $_GET['token'] ?? '';
 $accountKey = $_GET['account_key'] ?? '';
 $reportDate = $_GET['report_date'] ?? '';

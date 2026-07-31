@@ -20,6 +20,7 @@ from app.models.collector_sync_task import CollectorSyncTask
 from app.models.oauth_app_config import OAuthAppConfig
 from app.models.oauth_credential import OAuthCredential
 from app.models.oauth_event import OAuthEvent
+from app.models.proxy_binding import ProxyBinding
 
 
 @pytest.fixture()
@@ -590,3 +591,84 @@ def test_callback_creates_validation_task_for_existing_instance(
     assert validation_task.collector_instance_id == instance.id
     assert validation_task.status == "pending"
     assert "memory-only-access-token" not in repr(validation_task.__dict__)
+
+
+def test_runtime_config_uses_encrypted_active_credential(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    credential_cipher: CredentialCipher,
+) -> None:
+    oauth_app = create_account_with_oauth_app(db_session)
+    account = db_session.get(Account, oauth_app.account_id)
+    assert account is not None
+    account.external_account_id = "network-123"
+    oauth_app.authorization_status = "authorized"
+    oauth_app.runtime_status = "healthy"
+    oauth_app.active_credential_version = 3
+    instance = CollectorInstance(
+        account_id=account.id,
+        name="managed-runtime-node",
+        instance_token="managed-runtime-token",
+        status="ready",
+    )
+    db_session.add(instance)
+    db_session.flush()
+    db_session.add_all(
+        [
+            CollectorAccountPolicy(
+                account_id=account.id,
+                lifecycle_status="active",
+                gray_enabled=True,
+                hourly_fetch_enabled=True,
+                authoritative_daily_enabled=True,
+                manual_fetch_enabled=True,
+            ),
+            ProxyBinding(
+                account_id=account.id,
+                collector_instance_id=instance.id,
+                provider_name="proxyco",
+                protocol="socks5",
+                host="proxy.example.com",
+                port=5001,
+                username="proxy-user",
+                password="proxy-password",
+                expected_egress_ip="203.0.113.10",
+                status="active",
+            ),
+            OAuthCredential(
+                oauth_app_id=oauth_app.id,
+                version=3,
+                status="active",
+                client_secret_ciphertext=credential_cipher.encrypt("managed-client-secret"),
+                refresh_token_ciphertext=credential_cipher.encrypt("managed-refresh-token"),
+                token_fingerprint=credential_cipher.fingerprint("managed-refresh-token"),
+                granted_scopes="https://www.googleapis.com/auth/admanager",
+            ),
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        service,
+        "get_settings",
+        lambda: type(
+            "Settings",
+            (),
+            {
+                "credential_encryption_key": "test-encryption-key",
+                "credential_fingerprint_key": "test-fingerprint-key",
+            },
+        )(),
+    )
+    monkeypatch.setattr(service, "CredentialCipher", lambda **kwargs: credential_cipher)
+
+    runtime = service.build_runtime_config(
+        db_session,
+        instance,
+        control_plane_base_url="https://control.example.com",
+    )
+
+    assert runtime.google.fetch_mode == "admanager_soap"
+    assert runtime.google.operation == "fetch"
+    assert runtime.google.credential_version == 3
+    assert runtime.google.google_oauth_client_secret == "managed-client-secret"
+    assert runtime.google.google_oauth_refresh_token == "managed-refresh-token"

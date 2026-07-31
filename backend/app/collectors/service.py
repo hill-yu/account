@@ -620,6 +620,7 @@ def trigger_manual_fetch(
     *,
     timeout_seconds: int,
     fetch_kind: str = "manual_hourly",
+    direct_collector_only: bool = True,
 ) -> schemas.ManualFetchResponse:
     """手动触发一次数据拉取。
 
@@ -652,7 +653,9 @@ def trigger_manual_fetch(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Collector instance account does not match manual fetch account",
         )
-    if not instance.report_base_url or not instance.report_account_key or not instance.report_token:
+    if not direct_collector_only and (
+        not instance.report_base_url or not instance.report_account_key or not instance.report_token
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Collector instance is missing report configuration",
@@ -675,6 +678,26 @@ def trigger_manual_fetch(
             hourly_sync_task_id=existing_task.id,
             hourly_sync_task_status=existing_task.status,
             hourly_sync_task_created=False,
+        )
+
+    if direct_collector_only:
+        request_id = f"direct-hourly-{payload.account_id}-{payload.report_date.isoformat()}-{token_urlsafe(8)}"
+        sync_task, created = _get_or_create_hourly_sync_task(
+            db,
+            account_id=payload.account_id,
+            collector_instance_id=payload.collector_instance_id,
+            report_date=payload.report_date,
+            external_request_id=request_id,
+        )
+        _launch_hourly_sync_runtime(instance)
+        return schemas.ManualFetchResponse(
+            ok=True,
+            status=sync_task.status,
+            request_id=sync_task.external_request_id,
+            message="queued for direct collector",
+            hourly_sync_task_id=sync_task.id,
+            hourly_sync_task_status=sync_task.status,
+            hourly_sync_task_created=created,
         )
 
     # ── 步骤4: 远程调用 Node 端的 fetch.php 接口 ──
@@ -2354,14 +2377,57 @@ def build_runtime_config(
         )
         oauth_app = None
 
-    if oauth_app is not None:
-        if (
-            allow_stub_runtime_with_managed_credentials
-            and oauth_app.runtime_status == "healthy"
-            and oauth_app.active_credential_version is not None
-            and not oauth_app.refresh_token
-        ):
-            oauth_app = None
+    if (
+        oauth_app is not None
+        and allow_stub_runtime_with_managed_credentials
+        and oauth_app.runtime_status == "healthy"
+        and oauth_app.active_credential_version is not None
+        and not oauth_app.refresh_token
+    ):
+        oauth_app = None
+
+    if oauth_app is not None and oauth_app.active_credential_version is not None:
+        health_task = db.scalar(
+            select(CollectorSyncTask).where(
+                CollectorSyncTask.collector_instance_id == instance.id,
+                CollectorSyncTask.task_type == "oauth_health_check",
+                CollectorSyncTask.status.in_(ACTIVE_SYNC_TASK_STATUSES),
+            )
+        )
+        fetch_kind = "oauth_health_check" if health_task is not None else "claim"
+        assert_fetch_allowed(
+            db,
+            account_id=instance.account_id,
+            fetch_kind=fetch_kind,
+            credential_version=oauth_app.active_credential_version,
+        )
+        active = db.scalar(
+            select(OAuthCredential).where(
+                OAuthCredential.oauth_app_id == oauth_app.id,
+                OAuthCredential.version == oauth_app.active_credential_version,
+                OAuthCredential.status == "active",
+            )
+        )
+        account = db.get(Account, instance.account_id)
+        if active is None or account is None or not account.external_account_id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Active OAuth credential is not runnable")
+        settings = get_settings()
+        cipher = CredentialCipher(
+            encryption_key=settings.credential_encryption_key,
+            fingerprint_key=settings.credential_fingerprint_key,
+        )
+        google_runtime = schemas.CollectorGoogleRuntimeCredentials(
+            fetch_mode="admanager_soap",
+            operation="oauth_health_check" if health_task is not None else "fetch",
+            credential_version=active.version,
+            credential_fingerprint=active.token_fingerprint,
+            granted_scopes=active.granted_scopes,
+            admanager_network_code=account.external_account_id,
+            google_oauth_client_id=oauth_app.client_id,
+            google_oauth_client_secret=cipher.decrypt(active.client_secret_ciphertext),
+            google_oauth_refresh_token=cipher.decrypt(active.refresh_token_ciphertext),
+        )
+        oauth_app = None
 
     if oauth_app is not None:
         # 校验 OAuth 授权状态

@@ -141,6 +141,7 @@ def trigger_manual_fetch(
         db,
         payload,
         timeout_seconds=settings.operator_remote_report_timeout_seconds,
+        direct_collector_only=settings.direct_collector_only,
     )
 
 

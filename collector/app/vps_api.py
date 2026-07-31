@@ -134,6 +134,15 @@ def create_app(*, fetch_service: FetchService | None = None) -> FastAPI:
         account_key: str = Query(default=""),
         report_date: str = Query(default=""),
     ) -> JSONResponse:
+        if settings.direct_collector_only:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_code": "FETCH_PATH_DISABLED",
+                    "message": "legacy public fetch path is disabled",
+                },
+                status_code=409,
+            )
         request_id = _build_request_id()
         validation_error = _validate_public_request(
             expected_token=settings.trigger_token,
