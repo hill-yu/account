@@ -105,6 +105,9 @@ def test_scheduler_triggers_due_schedule_and_updates_state(
     session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "direct_collector_only", False)
     with session_factory() as session:
         account = Account(name="schedule-account", status="active", external_account_id="ext-1")
         session.add(account)
@@ -139,8 +142,10 @@ def test_scheduler_triggers_due_schedule_and_updates_state(
         *,
         timeout_seconds: int,
         fetch_kind: str,
+        direct_collector_only: bool,
     ):
         assert fetch_kind == "automatic_hourly"
+        assert direct_collector_only is False
         return collectors_service.schemas.ManualFetchResponse(
             ok=True,
             status="accepted",

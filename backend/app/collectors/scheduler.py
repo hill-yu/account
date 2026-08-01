@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.collectors import schemas, service
+from app.config import get_settings
 from app.database import get_session_factory
 from app.models.fetch_schedule import FetchSchedule
 
@@ -130,6 +131,7 @@ class FetchScheduler:
                         ),
                         timeout_seconds=self._timeout_seconds,
                         fetch_kind="automatic_hourly",
+                        direct_collector_only=get_settings().direct_collector_only,
                     )
                     schedule.last_trigger_status = response.status or ("accepted" if response.ok else "failed")
                     schedule.last_trigger_message = response.message
