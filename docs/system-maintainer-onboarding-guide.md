@@ -280,7 +280,7 @@ collector 回传的 batch 元数据。排查时用它判断任务是否真的上
 
 | 文件 | 作用 | 维护关注点 |
 |---|---|---|
-| `backend/app/main.py` | FastAPI 控制面入口。注册 CORS、`/health`、collector 路由，并在生产启用 scheduler。 | 如果服务启动、调度循环、健康检查异常，先看这里。 |
+| `backend/app/main.py` | FastAPI 控制面入口。注册 CORS、`/health`、collector 路由；Web ASGI 默认不启动 scheduler。 | 如果服务启动或健康检查异常，先看这里；调度问题看独立 `app.scheduler_main` 和 scheduler systemd 服务。 |
 | `backend/app/config.py` | 控制面配置。数据库 URL、超时、应用名等。 | 生产配置变更和本地环境差异从这里入手。 |
 | `backend/app/database.py` | SQLAlchemy engine、session factory、Base。 | SQLite timeout、连接参数、测试库配置都与这里有关。 |
 
@@ -915,3 +915,12 @@ npm run build
 - 实施方案与影响：Web 服务仅提供 API；scheduler 由专用进程运行。该变更不修改报表数据和既有 API，但部署时必须同时安装 scheduler systemd unit。
 - 验证与审阅：scheduler 专项测试 14 通过、后端全量 142 通过；独立审阅确认无未关闭 P0/P1。
 - Git 与发布：待本条随代码提交；尚未部署。
+
+### 2026-08-02 — 生产部署环境文件与 systemd 路径防护
+
+- 状态：整改中，规则已落地，待随本次文档变更提交。
+- 问题：同步运行目录时使用了未排除运行时文件的删除式同步，导致 `.env` 被删除；随后 scheduler 模板又引用了与实际服务器不一致的环境文件路径，造成控制面和 scheduler 启动失败。
+- 整改措施：发布前备份 `control_plane.db`、`control_plane.db-wal`、`control_plane.db-shm`、`.env`、systemd unit 和运行目录清单；同步命令必须先以相同排除项 `--dry-run`，再执行正式同步，且显式排除 `.env`、三个 SQLite 文件、备份目录、虚拟环境。部署后按“环境文件存在且权限正确 → Alembic head → Web health → scheduler active → 节点心跳/任务”顺序验证。
+- systemd 要求：以服务器实际 unit 为权威，逐项核对 `WorkingDirectory`、`EnvironmentFile`、`ExecStart`、运行用户和权限；scheduler 必须使用与 Web 相同的实际环境文件，并在启动前完成 schema-ready 门禁。
+- 影响与回滚：本规则增加发布前检查步骤，但避免因配置覆盖导致 API 中断、scheduler 无法启动或任务被错误推进。若同步失败，先恢复 `.env` 和服务健康，再继续任何迁移或调度动作。
+- 验证：本次已从迁移前备份恢复环境文件和 Operator Token，控制面健康恢复；scheduler 模板路径已修正为运行目录 `.env` 并成功启动。

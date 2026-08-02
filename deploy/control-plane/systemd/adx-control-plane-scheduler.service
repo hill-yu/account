@@ -8,6 +8,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/srv/adx-account-isolated-collector/backend
 EnvironmentFile=/srv/adx-account-isolated-collector/backend/.env
+ExecStartPre=/usr/bin/curl -fsS http://127.0.0.1:8000/health
 ExecStartPre=/srv/adx-account-isolated-collector/backend/.venv/bin/alembic upgrade head
 ExecStart=/srv/adx-account-isolated-collector/backend/.venv/bin/python -m app.scheduler_main
 Restart=always
