@@ -39,6 +39,18 @@ services:
       timeout: 5s
       retries: 12
 
+  scheduler:
+    build:
+      context: ..
+      dockerfile: deploy/backend/Dockerfile
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      ADX_COLLECTOR_APP_ENV: docker
+      ADX_COLLECTOR_DATABASE_URL: postgresql+psycopg://adx:adx@postgres:5432/adx_collector
+    command: ["python", "-m", "app.scheduler_main"]
+
   collector-example:
     build:
       context: ..
