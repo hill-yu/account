@@ -1,8 +1,10 @@
 from app.models.account import Account
 from app.models.account_daily_report import AccountDailyReport
+from app.models.account_daily_dimension_report import AccountDailyDimensionReport
 from app.models.account_hourly_report import AccountHourlyReport
 from app.models.account_report_day_status import AccountReportDayStatus
 from app.models.site_daily_report import SiteDailyReport
+from app.models.site_daily_dimension_report import SiteDailyDimensionReport
 from app.models.site_hourly_report import SiteHourlyReport
 from app.models.collector_ingestion_batch import CollectorIngestionBatch
 from app.models.collector_instance import CollectorInstance
@@ -18,9 +20,11 @@ from app.models.proxy_binding import ProxyBinding
 __all__ = [
     "Account",
     "AccountDailyReport",
+    "AccountDailyDimensionReport",
     "AccountHourlyReport",
     "AccountReportDayStatus",
     "SiteDailyReport",
+    "SiteDailyDimensionReport",
     "SiteHourlyReport",
     "OAuthAppConfig",
     "OAuthCredential",

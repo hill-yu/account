@@ -153,11 +153,11 @@ class AdManagerSoapReportFetcher:
             if batch is None:
                 return ()
             return (batch,)
-        rows = self._service.fetch_site_daily_report(report_date=task.report_date, task_id=task.id)
-        batch = self._service.build_fetch_batch(rows=rows)
-        if batch is None:
-            return ()
-        return (batch,)
+        core_rows = self._service.fetch_site_daily_report(report_date=task.report_date, task_id=task.id)
+        core_batch = self._service.build_fetch_batch(rows=core_rows)
+        dimension_rows = self._service.fetch_site_daily_dimension_report(report_date=task.report_date, task_id=task.id)
+        dimension_batch = self._service.build_daily_dimension_fetch_batch(rows=dimension_rows)
+        return tuple(batch for batch in (core_batch, dimension_batch) if batch is not None)
 
 
 def build_fetcher(settings: RuntimeSettings) -> Fetcher:

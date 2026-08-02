@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Generator
 import json
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from app.models.account_hourly_report import AccountHourlyReport
 from app.models.site_daily_report import SiteDailyReport
 from app.models.site_hourly_report import SiteHourlyReport
 from app.models.collector_ingestion_batch import CollectorIngestionBatch
+from app.models.site_daily_dimension_report import SiteDailyDimensionReport
 
 
 @pytest.fixture()
@@ -349,3 +351,161 @@ def test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups
     assert account_daily.status_code == 200
     assert account_daily.json()["coverage"]["hours_present"] == [9]
     assert account_daily.json()["coverage"]["is_complete_day"] is False
+
+    dimensions = test_client.get(
+        "/api/v1/operator/mid-platform/reports/site-hourly-dimensions",
+        params={"account_id": 1, "report_date": "2026-05-21", "site_name": "https://example.com/a", "page": 1, "page_size": 1},
+    )
+    assert dimensions.status_code == 200
+    dimension_body = dimensions.json()
+    assert dimension_body["dimension_data_available"] is False
+    assert dimension_body["available_from"] == "2026-08-02"
+    assert dimension_body["page"] == 1
+    assert dimension_body["page_size"] == 1
+    assert dimension_body["total"] == 1
+    assert dimension_body["items"][0]["hour"] == 9
+    assert dimension_body["items"][0]["report_time_utc"] == "2026-05-21T16:00:00"
+    assert dimension_body["items"][0]["source_timezone"] == "America/Los_Angeles"
+
+    date_range = test_client.get(
+        "/api/v1/operator/mid-platform/reports/site-hourly-dimensions",
+        params={"account_id": 1, "start_date": "2026-05-21", "end_date": "2026-05-21"},
+    )
+    assert date_range.status_code == 200
+    assert date_range.json()["report_date"] == "2026-05-21"
+    assert date_range.json()["start_date"] == "2026-05-21"
+    assert date_range.json()["end_date"] == "2026-05-21"
+    assert date_range.json()["total"] == 2
+
+    second_page = test_client.get(
+        "/api/v1/operator/mid-platform/reports/site-hourly-dimensions",
+        params={"account_id": 1, "report_date": "2026-05-21", "page": 2, "page_size": 1},
+    )
+    assert second_page.status_code == 200
+    assert second_page.json()["total"] == 2
+    assert [item["site_name"] for item in second_page.json()["items"]] == ["https://example.com/b"]
+
+    invalid_range = test_client.get(
+        "/api/v1/operator/mid-platform/reports/site-hourly-dimensions",
+        params={"start_date": "2026-05-01", "end_date": "2026-06-01"},
+    )
+    assert invalid_range.status_code == 422
+
+    ambiguous_range = test_client.get(
+        "/api/v1/operator/mid-platform/reports/site-hourly-dimensions",
+        params={"report_date": "2026-05-21", "start_date": "2026-05-21", "end_date": "2026-05-21"},
+    )
+    assert ambiguous_range.status_code == 422
+
+    daily_dimensions = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers=headers,
+        json={
+            "batch_key": "daily-dimension-page-1",
+            "row_count": 1,
+            "payload_hash": "daily-dimension-hash-1",
+            "schema_version": "admanager_daily_dimension_v1",
+            "rows": [{"report_date": "2026-05-21", "url_id": "url-1", "url": "https://example.com/a", "ad_country_code": "US", "ad_country_name": "United States", "ad_slot_id": "slot-top", "ad_slot_name": "Top Banner", "responses_served": 100, "requests": 130, "impressions": 80, "clicks": 4, "revenue": "1.600000", "ecpm": "20.000000"}],
+        },
+    )
+    assert daily_dimensions.status_code == 201
+
+    daily_dimension_response = test_client.get(
+        "/api/v1/operator/mid-platform/reports/site-daily-dimensions",
+        params={"account_id": 1, "report_date": "2026-05-21", "ad_country_code": "US", "ad_slot_id": "slot-top"},
+    )
+    assert daily_dimension_response.status_code == 200
+    daily_item = daily_dimension_response.json()["items"][0]
+    assert daily_item["source_kind"] == "authoritative_daily"
+    assert daily_item["coverage_rate"] == pytest.approx(100 / 130)
+    assert daily_item["click_through_rate"] == pytest.approx(4 / 80)
+    assert daily_item["impression_rate"] == pytest.approx(80 / 100)
+
+    zero_denominator = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers=headers,
+        json={
+            "batch_key": "daily-dimension-page-2",
+            "row_count": 1,
+            "payload_hash": "daily-dimension-hash-2",
+            "schema_version": "admanager_daily_dimension_v1",
+            "rows": [{"report_date": "2026-05-21", "url_id": "url-zero", "url": "https://example.com/zero", "ad_country_code": "ZZ", "ad_country_name": "Zero", "ad_slot_id": "slot-zero", "ad_slot_name": "Zero", "responses_served": 0, "requests": 0, "impressions": 0, "clicks": 0, "revenue": "0.000000", "ecpm": "0.000000"}],
+        },
+    )
+    assert zero_denominator.status_code == 201
+    zero_response = test_client.get(
+        "/api/v1/operator/mid-platform/reports/site-daily-dimensions",
+        params={"account_id": 1, "report_date": "2026-05-21", "ad_slot_id": "slot-zero"},
+    )
+    zero_item = zero_response.json()["items"][0]
+    assert (zero_item["coverage_rate"], zero_item["click_through_rate"], zero_item["impression_rate"]) == (0.0, 0.0, 0.0)
+
+    with session_factory() as session:
+        preserved_hourly = session.scalars(select(AccountHourlyReport)).all()
+
+    assert len(preserved_hourly) == 1
+    assert preserved_hourly[0].responses_served == 140
+
+
+def test_daily_dimension_snapshot_replaces_stale_rows_after_core_batch(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    task_id, token = _seed_task(test_client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    with session_factory.begin() as session:
+        session.add(
+            SiteDailyDimensionReport(
+                account_id=1,
+                report_date=date(2026, 5, 21),
+                url_id="stale-url",
+                url="https://example.com/stale",
+                ad_country_code="US",
+                ad_country_name="United States",
+                ad_slot_id="stale-slot",
+                ad_slot_name="Stale slot",
+                source_kind="authoritative_daily",
+                currency="USD",
+                responses_served=1,
+                requests=1,
+                impressions=1,
+                clicks=1,
+                revenue=Decimal("0.010000"),
+                ecpm=Decimal("10.000000"),
+                coverage_hours=24,
+                expected_hours=24,
+                is_complete=True,
+            )
+        )
+
+    core = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers=headers,
+        json={
+            "batch_key": "core-page-1",
+            "row_count": 1,
+            "payload_hash": "core-hash-1",
+            "schema_version": "admanager_site_core_v1",
+            "rows": [{"report_date": "2026-05-21", "url_id": "url-1", "url": "https://example.com/a", "responses_served": 10, "requests": 12, "impressions": 8, "clicks": 1, "revenue": "0.100000", "ecpm": "12.500000"}],
+        },
+    )
+    assert core.status_code == 201
+
+    dimensions = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers=headers,
+        json={
+            "batch_key": "dimension-page-1",
+            "row_count": 1,
+            "payload_hash": "dimension-hash-1",
+            "schema_version": "admanager_daily_dimension_v1",
+            "rows": [{"report_date": "2026-05-21", "url_id": "url-1", "url": "https://example.com/a", "ad_country_code": "CN", "ad_country_name": "China", "ad_slot_id": "slot-1", "ad_slot_name": "Banner", "responses_served": 10, "requests": 12, "impressions": 8, "clicks": 1, "revenue": "0.100000", "ecpm": "12.500000"}],
+        },
+    )
+    assert dimensions.status_code == 201
+
+    with session_factory() as session:
+        rows = session.scalars(select(SiteDailyDimensionReport).order_by(SiteDailyDimensionReport.url_id)).all()
+
+    assert [row.url_id for row in rows] == ["url-1"]

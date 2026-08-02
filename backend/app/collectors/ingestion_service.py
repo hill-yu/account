@@ -13,11 +13,13 @@ from sqlalchemy.orm import Session
 from app.collectors import schemas, service
 from app.models.account import Account
 from app.models.account_daily_report import AccountDailyReport
+from app.models.account_daily_dimension_report import AccountDailyDimensionReport
 from app.models.account_hourly_report import AccountHourlyReport
 from app.models.collector_ingestion_batch import CollectorIngestionBatch
 from app.models.collector_instance import CollectorInstance
 from app.models.collector_sync_task import CollectorSyncTask
 from app.models.site_daily_report import SiteDailyReport
+from app.models.site_daily_dimension_report import SiteDailyDimensionReport
 from app.models.site_hourly_report import SiteHourlyReport
 
 
@@ -43,10 +45,6 @@ def ingest_batch(
     )
 
     payload_json = json.dumps(payload.rows, separators=(",", ":"), sort_keys=True) if payload.rows is not None else None
-    is_first_batch_for_task = db.scalar(
-        select(CollectorIngestionBatch.id).where(CollectorIngestionBatch.task_id == task_id).limit(1)
-    ) is None
-
     existing = db.scalar(
         select(CollectorIngestionBatch).where(
             CollectorIngestionBatch.task_id == task_id,
@@ -62,6 +60,16 @@ def ingest_batch(
         ):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Batch key already used with different payload")
         return existing, True
+
+    # A report task can emit more than one schema.  Each schema owns an
+    # independent snapshot, so the first batch must be determined per schema
+    # instead of per task (core rows are uploaded before daily dimensions).
+    is_first_batch_for_schema = db.scalar(
+        select(CollectorIngestionBatch.id).where(
+            CollectorIngestionBatch.task_id == task_id,
+            CollectorIngestionBatch.schema_version == payload.schema_version,
+        ).limit(1)
+    ) is None
 
     batch = CollectorIngestionBatch(
         task_id=task.id,
@@ -79,7 +87,7 @@ def ingest_batch(
             task=task,
             schema_version=payload.schema_version,
             rows=payload.rows,
-            reset_existing=is_first_batch_for_task,
+            reset_existing=is_first_batch_for_schema,
         )
         db.commit()
     except IntegrityError as exc:
@@ -200,6 +208,73 @@ def _project_payload_if_supported(
         _rebuild_account_daily_report(db, account_id=task.account_id, report_date=task.report_date)
         return
 
+    if schema_version == "admanager_daily_dimension_v1":
+        account = db.get(Account, task.account_id)
+        if account is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+        normalized_rows = [
+            _normalize_admanager_daily_dimension_row(row, report_date=task.report_date, account=account)
+            for row in rows
+        ]
+        if reset_existing:
+            _reset_daily_dimension_projection(
+                db,
+                account_id=task.account_id,
+                report_date=task.report_date,
+            )
+        for row in normalized_rows:
+            existing = db.scalar(
+                select(SiteDailyDimensionReport).where(
+                    SiteDailyDimensionReport.account_id == task.account_id,
+                    SiteDailyDimensionReport.report_date == task.report_date,
+                    SiteDailyDimensionReport.url_id == row["url_id"],
+                    SiteDailyDimensionReport.ad_country_code == row["ad_country_code"],
+                    SiteDailyDimensionReport.ad_slot_id == row["ad_slot_id"],
+                    SiteDailyDimensionReport.source_kind == "authoritative_daily",
+                )
+            )
+            if existing is None:
+                existing = SiteDailyDimensionReport(
+                    account_id=task.account_id,
+                    report_date=task.report_date,
+                    url_id=row["url_id"],
+                    ad_country_code=row["ad_country_code"],
+                    ad_slot_id=row["ad_slot_id"],
+                    source_kind="authoritative_daily",
+                )
+                db.add(existing)
+            for key, value in row.items():
+                setattr(existing, key, value)
+            existing.source_kind = "authoritative_daily"
+            existing.coverage_hours = row["expected_hours"]
+            existing.is_complete = True
+        db.flush()
+        _rebuild_account_daily_dimension_reports(db, account_id=task.account_id, report_date=task.report_date)
+        return
+
+
+def _normalize_admanager_daily_dimension_row(row: dict[str, Any], *, report_date: date, account: Account) -> dict[str, Any]:
+    if date.fromisoformat(str(row.get("report_date"))) != report_date:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Batch row report_date mismatch")
+    try:
+        # Authoritative daily rows are keyed by the account's configured GAM
+        # report timezone.  A civil day can contain 23 or 25 hours at DST
+        # boundaries, so a constant 24 would produce false completeness.
+        expected_hours = service._expected_hours_for_timezone(report_date, account.timezone)
+        return {"url_id": str(row["url_id"]), "url": str(row["url"]), "ad_country_code": str(row.get("ad_country_code") or "UNKNOWN"), "ad_country_name": str(row.get("ad_country_name") or "UNKNOWN"), "ad_slot_id": str(row.get("ad_slot_id") or "UNKNOWN"), "ad_slot_name": str(row.get("ad_slot_name") or "UNKNOWN"), "currency": account.currency, "responses_served": int(row["responses_served"]), "requests": int(row.get("requests", 0)), "impressions": int(row["impressions"]), "clicks": int(row["clicks"]), "revenue": Decimal(str(row["revenue"])), "ecpm": Decimal(str(row["ecpm"])), "expected_hours": expected_hours}
+    except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Batch rows do not match admanager_daily_dimension_v1 schema") from exc
+
+
+def _rebuild_account_daily_dimension_reports(db: Session, *, account_id: int, report_date: date) -> None:
+    db.execute(delete(AccountDailyDimensionReport).where(AccountDailyDimensionReport.account_id == account_id, AccountDailyDimensionReport.report_date == report_date, AccountDailyDimensionReport.source_kind == "authoritative_daily"))
+    rows = db.scalars(select(SiteDailyDimensionReport).where(SiteDailyDimensionReport.account_id == account_id, SiteDailyDimensionReport.report_date == report_date, SiteDailyDimensionReport.source_kind == "authoritative_daily")).all()
+    grouped: dict[tuple[str, str], list[Any]] = {}
+    for row in rows: grouped.setdefault((row.ad_country_code, row.ad_slot_id), []).append(row)
+    for (_, _), values in grouped.items():
+        first = values[0]; revenue = sum((value.revenue for value in values), Decimal("0")); impressions = sum(value.impressions for value in values)
+        db.add(AccountDailyDimensionReport(account_id=account_id, report_date=report_date, ad_country_code=first.ad_country_code, ad_country_name=first.ad_country_name, ad_slot_id=first.ad_slot_id, ad_slot_name=first.ad_slot_name, source_kind="authoritative_daily", currency=first.currency, responses_served=sum(value.responses_served for value in values), requests=sum(value.requests for value in values), impressions=impressions, clicks=sum(value.clicks for value in values), revenue=revenue, ecpm=_calculate_ecpm(revenue=revenue, impressions=impressions), coverage_hours=first.coverage_hours, expected_hours=first.expected_hours, is_complete=True))
+
 
 def _normalize_admanager_site_row(row: dict[str, Any], report_date: date) -> dict[str, Any]:
     row_report_date = row.get("report_date")
@@ -299,6 +374,24 @@ def _reset_hourly_projection(db: Session, *, account_id: int, report_date: date)
         delete(AccountHourlyReport).where(
             AccountHourlyReport.account_id == account_id,
             AccountHourlyReport.report_date == report_date,
+        )
+    )
+
+
+def _reset_daily_dimension_projection(db: Session, *, account_id: int, report_date: date) -> None:
+    """Clear the authoritative daily-dimension snapshot before its first page."""
+    db.execute(
+        delete(SiteDailyDimensionReport).where(
+            SiteDailyDimensionReport.account_id == account_id,
+            SiteDailyDimensionReport.report_date == report_date,
+            SiteDailyDimensionReport.source_kind == "authoritative_daily",
+        )
+    )
+    db.execute(
+        delete(AccountDailyDimensionReport).where(
+            AccountDailyDimensionReport.account_id == account_id,
+            AccountDailyDimensionReport.report_date == report_date,
+            AccountDailyDimensionReport.source_kind == "authoritative_daily",
         )
     )
 
