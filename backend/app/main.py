@@ -76,4 +76,7 @@ def create_app(
     return application
 
 
-app = create_app(enable_scheduler=True)
+# The ASGI module is the control plane only.  Scheduler execution must be
+# started explicitly through a dedicated process so a web-service restart
+# cannot enqueue production collection work unexpectedly.
+app = create_app()

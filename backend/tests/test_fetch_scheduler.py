@@ -180,6 +180,19 @@ def test_create_app_disables_scheduler_by_default() -> None:
     assert app.state.scheduler_enabled is False
 
 
+def test_module_level_asgi_app_disables_scheduler() -> None:
+    from app.main import app
+
+    assert app.state.scheduler_enabled is False
+
+
+def test_scheduler_runner_is_a_separate_importable_entrypoint() -> None:
+    from app.scheduler_main import main, run_scheduler
+
+    assert callable(main)
+    assert callable(run_scheduler)
+
+
 def test_scheduler_only_creates_daily_fetch_for_gray_accounts(
     session_factory,
     monkeypatch: pytest.MonkeyPatch,
