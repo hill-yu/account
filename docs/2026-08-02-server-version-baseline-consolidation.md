@@ -1,6 +1,6 @@
 # 新服务器代码版本基线与整合记录
 
-- 状态：审阅通过，待提交并推送
+- 状态：基线已提交并推送
 - 创建日期：2026-08-02
 - 整合分支：`codex/server-version-consolidation`
 - 权威运行基线：`6085a5b35b02be7d0314812c8c405f9ee70e54c9`
@@ -67,3 +67,9 @@
 审阅日期：2026-08-02。结论：无 Critical；允许进入逐项选择性移植阶段，也允许提交本基线记录。
 
 审阅确认了基线提交可由远程分支 `origin/codex/oauth-token-remediation-v1` 追溯，运行目录与源码目录已正确区分，旧分支的整分支合并风险真实，且原工作区改动未被覆盖。提交完成后，必须推送 `codex/server-version-consolidation`，使权威基线不只保留在本机。
+
+## 7. Git 可追溯信息
+
+- 初始基线记录提交：`df93e86a7242ba42719fea76ffdb3e89e682b399`（`docs: establish server version baseline`）。
+- 远程整合分支：`origin/codex/server-version-consolidation`。
+- 服务器权威运行基线：`6085a5b35b02be7d0314812c8c405f9ee70e54c9`。
