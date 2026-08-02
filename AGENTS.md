@@ -12,3 +12,5 @@
 8. 保留用户已有的工作区修改，不做无关格式化、回滚或覆盖。任何生产写操作先备份、后执行、再验证。
 9. 分支与目录：`master` 是新服务器唯一发布分支；`dev` 是本地开发分支。开发只能在隔离本地工作区的 `dev` 上进行；测试、独立审阅、Git 提交后才可将 `dev` 合并至 `master`。新服务器仅从 `master` 同步，禁止直接编辑运行目录。
 10. 旧服务器仅作为隔离测试环境：必须使用独立测试服务、数据库、域名、测试账号和测试代理；不得恢复生产 scheduler、正式采集任务或生产写入。
+11. 生产发布不得直接使用未核验的 `rsync --delete` 覆盖运行目录；发布前先以完全相同的排除清单运行 `rsync --dry-run`。必须备份并显式排除 `.env`、`control_plane.db`、`control_plane.db-wal`、`control_plane.db-shm`、备份目录和虚拟环境。同步后先检查 systemd `EnvironmentFile` 路径可读、执行 Alembic、验证 Web `/health`，最后才允许启动 scheduler。
+12. 每个 systemd 单元的 `WorkingDirectory`、`EnvironmentFile`、`ExecStart` 和运行用户必须与服务器实际路径逐项核对；模板默认值不得替代线上事实。若恢复环境文件或 Token，必须同时验证服务健康和所需配置项存在，且不得在日志、文档或 Git 中输出密钥。
