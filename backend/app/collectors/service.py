@@ -67,6 +67,8 @@ from app.models.oauth_event import OAuthEvent
 from app.models.proxy_binding import ProxyBinding
 from app.models.site_daily_report import SiteDailyReport
 from app.models.site_hourly_report import SiteHourlyReport
+from app.models.account_daily_dimension_report import AccountDailyDimensionReport
+from app.models.site_daily_dimension_report import SiteDailyDimensionReport
 
 
 # ============================================================================
@@ -1862,6 +1864,91 @@ def list_mid_platform_site_resources(
 # ============================================================================
 # 中台报表查询 — 将数据库原始报表数据组装为前端可用的结构化报表
 # ============================================================================
+
+DIMENSION_DATA_AVAILABLE_FROM = date(2026, 8, 2)
+
+
+def _dimension_row(report: Any, *, site_name: str | None = None) -> schemas.DimensionReportRow:
+    source_timezone = getattr(report, "source_timezone", None)
+    is_hourly = hasattr(report, "hour")
+    return schemas.DimensionReportRow(account_id=report.account_id, report_date=report.report_date, site_name=site_name, ad_country_code=report.ad_country_code, ad_country_name=report.ad_country_name, ad_slot_id=report.ad_slot_id, ad_slot_name=report.ad_slot_name, source_kind=getattr(report, "source_kind", "hourly"), responses_served=report.responses_served, requests=report.requests, impressions=report.impressions, clicks=report.clicks, revenue=float(report.revenue), ecpm=float(report.ecpm), coverage_rate=(report.responses_served / report.requests if report.requests else 0.0), click_through_rate=(report.clicks / report.impressions if report.impressions else 0.0), impression_rate=(report.impressions / report.responses_served if report.responses_served else 0.0), coverage_hours=getattr(report, "coverage_hours", 1 if is_hourly else 0), expected_hours=getattr(report, "expected_hours", _expected_hours_for_timezone(report.report_date, source_timezone) if source_timezone else 24), is_complete=getattr(report, "is_complete", False), hour=getattr(report, "hour", None), report_time_utc=getattr(report, "report_time_utc", None), source_timezone=source_timezone)
+
+
+def _resolve_dimension_date_range(*, report_date: date | None, start_date: date | None, end_date: date | None) -> tuple[date, date]:
+    if report_date is not None:
+        if start_date is not None or end_date is not None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Use report_date or start_date/end_date, not both")
+        return report_date, report_date
+    if start_date is None or end_date is None or end_date < start_date:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="start_date and end_date must form a valid range")
+    if (end_date - start_date).days > 30:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Dimension report date range cannot exceed 31 days")
+    return start_date, end_date
+
+
+def _dimension_response(*, start_date: date, end_date: date, total: int, items: list[schemas.DimensionReportRow], page: int, page_size: int) -> schemas.DimensionReportResponse:
+    return schemas.DimensionReportResponse(report_date=start_date if start_date == end_date else None, start_date=start_date, end_date=end_date, dimension_data_available=end_date >= DIMENSION_DATA_AVAILABLE_FROM, available_from=DIMENSION_DATA_AVAILABLE_FROM, page=page, page_size=page_size, total=total, items=items)
+
+
+def _page_dimension_query(db: Session, query: Any, *, page: int, page_size: int) -> tuple[int, list[Any]]:
+    """Count and fetch only the requested stable page; never materialize all rows."""
+    total = int(db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0)
+    rows = list(db.scalars(query.offset((page - 1) * page_size).limit(page_size)))
+    return total, rows
+
+
+def list_mid_platform_account_daily_dimensions(db: Session, *, report_date: date | None = None, start_date: date | None = None, end_date: date | None = None, account_id: int | None = None, ad_country_code: str | None = None, ad_slot_id: str | None = None, page: int = 1, page_size: int = 100) -> schemas.DimensionReportResponse:
+    start_date, end_date = _resolve_dimension_date_range(report_date=report_date, start_date=start_date, end_date=end_date)
+    query = select(AccountDailyDimensionReport).where(AccountDailyDimensionReport.report_date.between(start_date, end_date)).order_by(AccountDailyDimensionReport.report_date, AccountDailyDimensionReport.account_id, AccountDailyDimensionReport.ad_country_code, AccountDailyDimensionReport.ad_slot_id)
+    if account_id is not None: query = query.where(AccountDailyDimensionReport.account_id == account_id)
+    if ad_country_code is not None: query = query.where(AccountDailyDimensionReport.ad_country_code == ad_country_code)
+    if ad_slot_id is not None: query = query.where(AccountDailyDimensionReport.ad_slot_id == ad_slot_id)
+    total, rows = _page_dimension_query(db, query, page=page, page_size=page_size)
+    return _dimension_response(start_date=start_date, end_date=end_date, total=total, items=[_dimension_row(row) for row in rows], page=page, page_size=page_size)
+
+
+def list_mid_platform_site_daily_dimensions(db: Session, *, report_date: date | None = None, start_date: date | None = None, end_date: date | None = None, account_id: int | None = None, site_name: str | None = None, ad_country_code: str | None = None, ad_slot_id: str | None = None, page: int = 1, page_size: int = 100) -> schemas.DimensionReportResponse:
+    start_date, end_date = _resolve_dimension_date_range(report_date=report_date, start_date=start_date, end_date=end_date)
+    query = select(SiteDailyDimensionReport).where(SiteDailyDimensionReport.report_date.between(start_date, end_date)).order_by(SiteDailyDimensionReport.report_date, SiteDailyDimensionReport.account_id, SiteDailyDimensionReport.url_id, SiteDailyDimensionReport.ad_country_code, SiteDailyDimensionReport.ad_slot_id)
+    if account_id is not None: query = query.where(SiteDailyDimensionReport.account_id == account_id)
+    if site_name is not None: query = query.where(SiteDailyDimensionReport.url == site_name)
+    if ad_country_code is not None: query = query.where(SiteDailyDimensionReport.ad_country_code == ad_country_code)
+    if ad_slot_id is not None: query = query.where(SiteDailyDimensionReport.ad_slot_id == ad_slot_id)
+    total, rows = _page_dimension_query(db, query, page=page, page_size=page_size)
+    return _dimension_response(start_date=start_date, end_date=end_date, total=total, items=[_dimension_row(row, site_name=row.url) for row in rows], page=page, page_size=page_size)
+
+
+def _hourly_dimension_response(rows: list[Any], *, start_date: date, end_date: date, total: int, site: bool, page: int, page_size: int) -> schemas.DimensionReportResponse:
+    items = [_dimension_row(row, site_name=row.url if site else None) for row in rows]
+    return _dimension_response(start_date=start_date, end_date=end_date, total=total, items=items, page=page, page_size=page_size)
+
+
+def _expected_hours_for_timezone(report_date: date, timezone_name: str) -> int:
+    start = datetime(report_date.year, report_date.month, report_date.day, tzinfo=ZoneInfo(timezone_name))
+    end = start + timedelta(days=1)
+    return int((end.astimezone(timezone.utc) - start.astimezone(timezone.utc)).total_seconds() // 3600)
+
+
+def list_mid_platform_account_hourly_dimensions(db: Session, *, report_date: date | None = None, start_date: date | None = None, end_date: date | None = None, account_id: int | None = None, ad_country_code: str | None = None, ad_slot_id: str | None = None, page: int = 1, page_size: int = 100) -> schemas.DimensionReportResponse:
+    start_date, end_date = _resolve_dimension_date_range(report_date=report_date, start_date=start_date, end_date=end_date)
+    query = select(AccountHourlyReport).where(AccountHourlyReport.report_date.between(start_date, end_date)).order_by(AccountHourlyReport.report_date, AccountHourlyReport.account_id, AccountHourlyReport.report_time_utc, AccountHourlyReport.ad_country_code, AccountHourlyReport.ad_slot_id)
+    if account_id is not None: query = query.where(AccountHourlyReport.account_id == account_id)
+    if ad_country_code is not None: query = query.where(AccountHourlyReport.ad_country_code == ad_country_code)
+    if ad_slot_id is not None: query = query.where(AccountHourlyReport.ad_slot_id == ad_slot_id)
+    total, rows = _page_dimension_query(db, query, page=page, page_size=page_size)
+    return _hourly_dimension_response(rows, start_date=start_date, end_date=end_date, total=total, site=False, page=page, page_size=page_size)
+
+
+def list_mid_platform_site_hourly_dimensions(db: Session, *, report_date: date | None = None, start_date: date | None = None, end_date: date | None = None, account_id: int | None = None, site_name: str | None = None, ad_country_code: str | None = None, ad_slot_id: str | None = None, page: int = 1, page_size: int = 100) -> schemas.DimensionReportResponse:
+    start_date, end_date = _resolve_dimension_date_range(report_date=report_date, start_date=start_date, end_date=end_date)
+    query = select(SiteHourlyReport).where(SiteHourlyReport.report_date.between(start_date, end_date)).order_by(SiteHourlyReport.report_date, SiteHourlyReport.account_id, SiteHourlyReport.report_time_utc, SiteHourlyReport.url_id, SiteHourlyReport.ad_country_code, SiteHourlyReport.ad_slot_id)
+    if account_id is not None: query = query.where(SiteHourlyReport.account_id == account_id)
+    if site_name is not None: query = query.where(SiteHourlyReport.url == site_name)
+    if ad_country_code is not None: query = query.where(SiteHourlyReport.ad_country_code == ad_country_code)
+    if ad_slot_id is not None: query = query.where(SiteHourlyReport.ad_slot_id == ad_slot_id)
+    total, rows = _page_dimension_query(db, query, page=page, page_size=page_size)
+    return _hourly_dimension_response(rows, start_date=start_date, end_date=end_date, total=total, site=True, page=page, page_size=page_size)
+
 
 def list_mid_platform_site_daily_report(
     db: Session,

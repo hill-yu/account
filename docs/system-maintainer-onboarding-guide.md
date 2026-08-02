@@ -1,0 +1,908 @@
+# 中台系统维护接手指南
+
+版本：2.0  
+更新日期：2026-08-02  
+适用项目：`adx-mid-platform` / `adx-account-isolated-collector`  
+适用对象：新接手维护的后端、运维、数据排查同事
+
+## 1. 这份文档解决什么问题
+
+这份文档是新同事接手系统的总入口。目标不是替代已有 SOP，而是告诉接手人：
+
+1. 应该先从哪里读起。
+2. 每个目录、模块、代码文件大致负责什么。
+3. 一次数据拉取从调度到入库经过哪些环节。
+4. 常见运维动作应该查哪些表、看哪些服务、跑哪些命令。
+5. 修改代码前应该先看哪些测试和文档。
+
+读完本文后，新同事应该可以做到：
+
+- 看懂控制面、节点运行时、前端控制台之间的关系。
+- 根据账号节点名定位账号、实例、OAuth、代理、schedule、任务和报表数据。
+- 判断小时数据和权威日报数据分别来自哪里。
+- 独立完成一次授权失效排查、节点重授权、小时补跑和结果验证。
+- 知道改某个功能时应该改哪些文件、跑哪些测试。
+
+## 1.1 强制开发治理流程（所有功能与代码改动）
+
+本节是本仓库所有后续开发任务的第一原则，适用于修复、重构、新功能、配置与数据库结构变更；不得因改动很小而省略。项目根目录的 `AGENTS.md` 会将这些要求带入每个新的开发任务。本节与该文件末尾的“功能/代码变更记录”共同构成唯一的维护台账。
+
+### 必经顺序
+
+```text
+明确需求与影响范围
+  -> 阅读现状代码、测试和相关 SOP，形成实施方案
+  -> 本地隔离修改
+  -> 独立审阅修改后的代码（通过后才可进入集成/真实账号测试）
+  -> 本地自动化测试与必要的人工验证
+  -> 更新本指南中的变更记录
+  -> 提交 Git（提交内容须包含代码、测试、迁移和文档）
+  -> 发布前检查、灰度发布、生产验证与回滚准备
+```
+
+1. **先说明再改动。** 每一次功能或代码变更必须先有可追溯的修改说明，至少写明：变更内容、修改原因、实施方案、预期结果与可能后果、影响范围、回滚方式、验证标准。
+2. **本地修改和测试优先。** 不直接在生产服务器编辑源码。先在本地完成最小范围修改，并运行与改动对应的自动化测试；跨模块改动必须补充回归测试。
+3. **Google 数据拉取的真实测试受控执行。** 涉及 OAuth、代理、Google Ad Manager SOAP、采集 runtime、实际报表拉取或任务调度的测试，必须在开始前明确指定一个已授权的测试账号和与其绑定的测试代理。未经明确授权，不得用生产账号、生产代理或批量调度做探测性测试；测试结束后核验任务、batch 与报表数据，并清理或标记测试产生的补跑任务。
+4. **独立审阅在测试、提交和部署之前。** 代码完成后必须由未参与本次实现的独立审阅者（人员或独立审阅任务）审阅差异、测试覆盖、迁移、错误处理和安全边界。只有结论为“无阻塞问题”或全部阻塞问题已修复并复审通过，才可以进行集成/真实账号测试、Git 提交和部署。审阅结论与证据必须记入变更记录。
+5. **先提交 Git，后部署。** 部署前，所有发布改动（含代码、测试、迁移、配置样例和本指南记录）必须已提交到 Git，且提交号写入变更记录。禁止以未提交的工作区内容发布；禁止把密码、Token、OAuth 回调、代理完整凭据或生产数据提交到仓库。
+6. **生产变更可验证、可回滚。** 发布前确认备份、数据库迁移顺序、灰度范围、健康检查、回滚命令和负责人。发布后记录实际结果、异常与影响；若发生偏差，停止扩大范围并按回滚方案处置。
+
+### 最小交付物清单
+
+每个改动至少应具有：需求/问题链接或编号、实施方案、代码差异、相关测试及结果、独立审阅结论、本文第 22 节的变更记录、Git 提交号，以及（如发布）发布与验证记录。数据库结构变更还必须包含 Alembic migration、升级/降级验证和备份说明。
+
+## 2. 推荐阅读顺序
+
+不要一上来就从代码开始读。这个项目的生产行为和运维规则很重要，建议按下面顺序上手。
+
+### 第一天：理解系统怎么跑
+
+1. 先读本文。
+2. 读 `docs/production-operations-and-development-sop.md`  
+   重点看：生产路径、服务名、数据库、灰度名单、停拉名单、小时任务、权威日报、排障 SQL。
+3. 读 `docs/standard-node-onboarding-and-proxy-fetch-sop.md`  
+   重点看：新节点接入、OAuth 重授权、代理、节点库、schedule、灰度。
+4. 读 `README.md`  
+   用它建立最初的仓库结构印象，但注意 README 有些内容偏早期 MVP，生产逻辑以 SOP 和当前代码为准。
+
+### 第二天：理解数据链路
+
+1. 读 `backend/app/collectors/service.py`
+2. 读 `backend/app/collectors/scheduler.py`
+3. 读 `backend/app/collectors/ingestion_service.py`
+4. 读 `collector/app/runtime.py`
+5. 读 `collector/app/fetcher.py`
+6. 读 `collector/app/admanager_soap.py`
+
+读的时候围绕这两个链路看：
+
+```text
+小时实时链路：
+FetchSchedule
+  -> FetchScheduler
+  -> report_fetch_hourly task
+  -> collector runtime
+  -> Google Ad Manager SOAP hourly report
+  -> collector batch callback
+  -> account_hourly_reports / site_hourly_reports
+
+权威日报链路：
+gray account list
+  -> FetchScheduler authoritative daily scan
+  -> report_fetch task
+  -> collector runtime
+  -> Google Ad Manager SOAP daily report
+  -> collector batch callback
+  -> account_daily_reports / site_daily_reports
+```
+
+### 第三天：能做日常维护
+
+1. 在只读模式下查一次当前灰度名单。
+2. 查一次所有灰度节点的 schedule 状态。
+3. 查一次最近 24 小时小时任务状态。
+4. 查一次最近业务日权威日报状态。
+5. 找一个已成功节点，追踪它从任务到 batch 再到报表表的完整记录。
+
+### 第四天以后：再开始改代码
+
+改代码前至少要知道：
+
+- FastAPI 路由在哪里。
+- 核心业务服务在哪里。
+- 调度器在哪里。
+- 入库投影在哪里。
+- ORM 模型和 Alembic migration 在哪里。
+- 对应测试文件在哪里。
+
+## 3. 系统全景
+
+本系统是一个账号隔离的数据拉取平台。每个 Ad Manager 账号对应一个独立节点运行环境，独立 OAuth、独立代理、独立节点 MySQL。中台控制面负责管理账号、任务、调度、入库和对外查询。
+
+### 3.1 主要组件
+
+```text
+user_system
+  -> 中台公开 API
+  -> backend FastAPI control plane
+  -> SQLite control_plane.db
+
+backend scheduler
+  -> 创建小时任务 / 权威日报任务
+  -> 启动 collector runtime
+
+collector runtime
+  -> 从 control plane 获取任务
+  -> 用节点 OAuth + 节点代理访问 Google Ad Manager
+  -> 把 batch 回传 control plane
+
+collector node service
+  -> 每个节点独立 FastAPI 服务
+  -> 提供 /health
+  -> 提供 /public/fetch.php 和 /public/report.php 兼容入口
+  -> 使用独立 MySQL adx_data_<account_key>
+```
+
+### 3.2 生产中最重要的事实
+
+1. 小时报表用于实时观察，不是权威日报来源。
+2. 权威日报必须由 Google Ad Manager 完整日报重新拉取。
+3. 中台日报 API 应返回中台本地已入库的权威日报。
+4. 拉取 Google 数据必须走账号绑定代理。
+5. 停拉名单优先级高于灰度名单。
+6. 在灰度名单中不等于小时自动拉取已开启；小时自动拉取还要看 `fetch_schedules.enabled`。
+7. 自动权威日报扫描使用灰度名单作为候选范围，并排除停拉名单。
+
+## 4. 仓库目录职责
+
+| 目录 | 职责 |
+|---|---|
+| `backend/` | 中台控制面。FastAPI、SQLAlchemy、调度器、任务、OAuth、入库、对外 API。 |
+| `collector/` | 节点运行时和节点 API。负责真实访问 Google Ad Manager，提交 batch。 |
+| `frontend/` | 运维控制台。React + Vite，用于账号、OAuth、实例、代理、任务、报表查询。 |
+| `deploy/` | 部署资产。Docker、systemd、Nginx、PHP 兼容入口、节点 env 示例。 |
+| `docs/` | 运维 SOP、节点接入 SOP、历史设计、排障记录、交接文档。 |
+| `scripts/` | 一次性或辅助脚本，例如本地虚拟流、同步生产数据、迁移小时字段。 |
+| `outputs/` | 运行中导出的分析结果，不属于核心代码。 |
+| `tmp/` / `tmp_*.py` | 临时排查脚本。只能作为参考，不能当作长期接口。 |
+
+## 5. 核心概念
+
+### 5.1 Account
+
+控制面里的账号。关键字段：
+
+- `accounts.id`
+- `accounts.name`
+- `accounts.external_account_id`
+- `accounts.timezone`
+- `accounts.status`
+
+生产中 `external_account_id` 通常是 Google Ad Manager network code。
+
+### 5.2 CollectorInstance
+
+一个账号对应的采集实例。关键字段：
+
+- `collector_instances.id`
+- `collector_instances.account_id`
+- `collector_instances.report_account_key`
+- `collector_instances.report_base_url`
+- `collector_instances.report_token`
+- `collector_instances.instance_token`
+- `collector_instances.status`
+
+运维时通常用 `report_account_key` 定位节点，例如：
+
+```text
+domeband
+liberatedu
+reboroots
+```
+
+### 5.3 OAuthAppConfig
+
+Google OAuth 配置和授权状态。关键字段：
+
+- `client_id`
+- `client_secret`
+- `redirect_uri`
+- `authorization_status`
+- `authorization_state`
+- `refresh_token`
+- `refresh_token_updated_at`
+- `access_token_expires_at`
+
+重授权时只更新已有 OAuth 配置，不创建重复 account 或 instance。
+
+### 5.4 ProxyBinding
+
+账号绑定代理。真实拉数必须走代理，不能失败后降级直连。
+
+### 5.5 FetchSchedule
+
+小时自动调度配置。关键字段：
+
+- `enabled`
+- `mode`
+- `interval_hours`
+- `next_run_at`
+- `last_triggered_at`
+- `last_trigger_status`
+- `last_trigger_message`
+
+灰度节点要自动每小时拉实时数据，必须满足：
+
+```text
+report_account_key 在 TARGETED_BACKFILL_ACCOUNT_KEYS
+且不在停拉排除名单
+且 fetch_schedules.enabled = true
+且 fetch_schedules.interval_hours = 1
+```
+
+### 5.6 CollectorSyncTask
+
+中台任务表。任务类型：
+
+- `report_fetch_hourly`：小时实时任务
+- `report_fetch`：权威日报任务
+
+任务状态：
+
+- `pending`
+- `in_progress`
+- `succeeded`
+- `failed`
+- `cancelled`
+- `blocked`
+
+### 5.7 CollectorIngestionBatch
+
+collector 回传的 batch 元数据。排查时用它判断任务是否真的上传过数据。
+
+### 5.8 报表事实表
+
+小时事实表：
+
+- `account_hourly_reports`
+- `site_hourly_reports`
+
+权威日报事实表：
+
+- `account_daily_reports`
+- `site_daily_reports`
+
+注意：日报表里可能曾经存在小时投影或历史数据，判断权威日报是否完成时，要结合成功的 `report_fetch` 任务，而不是只看 `account_daily_reports` 有无数据。
+
+## 6. Backend 文件导览
+
+### 6.1 应用入口与配置
+
+| 文件 | 作用 | 维护关注点 |
+|---|---|---|
+| `backend/app/main.py` | FastAPI 控制面入口。注册 CORS、`/health`、collector 路由，并在生产启用 scheduler。 | 如果服务启动、调度循环、健康检查异常，先看这里。 |
+| `backend/app/config.py` | 控制面配置。数据库 URL、超时、应用名等。 | 生产配置变更和本地环境差异从这里入手。 |
+| `backend/app/database.py` | SQLAlchemy engine、session factory、Base。 | SQLite timeout、连接参数、测试库配置都与这里有关。 |
+
+### 6.2 Collector 控制面模块
+
+| 文件 | 作用 | 维护关注点 |
+|---|---|---|
+| `backend/app/collectors/router.py` | FastAPI 路由层。operator API、collector callback、OAuth callback、报表 API 都在这里注册。 | 对外 API 行为变更先找路由，再跳 service。 |
+| `backend/app/collectors/service.py` | 控制面核心业务逻辑。账号、实例、任务、schedule、灰度名单、停拉名单、手动拉取、报表查询、runtime 启动。 | 最重要文件之一。改灰度、停拉、任务创建、报表返回语义都要看这里。 |
+| `backend/app/collectors/scheduler.py` | 定时调度器。扫描 `fetch_schedules` 创建小时任务，扫描灰度账号创建权威日报任务，回收 stale in_progress 任务。 | 小时自动任务、权威日报自动任务、卡住任务回收问题看这里。 |
+| `backend/app/collectors/ingestion_service.py` | batch 入库投影。把 collector 回传的 batch 写入小时表或日报表。 | 数据入库失败、422、字段缺失、SQLite 写锁重点看这里。 |
+| `backend/app/collectors/oauth_service.py` | OAuth 授权 URL、callback code 兑换、refresh token 保存。 | 节点重授权、redirect_uri mismatch、invalid_grant 看这里。 |
+| `backend/app/collectors/security.py` | collector token 鉴权。 | callback 被拒绝或 instance token 异常看这里。 |
+| `backend/app/collectors/schemas.py` | Pydantic 请求/响应 schema。 | API 字段变更、响应兼容性、422 校验错误看这里。 |
+| `backend/app/collectors/__init__.py` | Python package 标记。 | 通常不需要改。 |
+
+### 6.3 Backend ORM 模型
+
+| 文件 | 表 | 作用 |
+|---|---|---|
+| `backend/app/models/account.py` | `accounts` | 账号主表。 |
+| `backend/app/models/collector_instance.py` | `collector_instances` | 节点实例、回调 token、节点 report 配置。 |
+| `backend/app/models/oauth_app_config.py` | `oauth_app_configs` | Google OAuth client、state、token。 |
+| `backend/app/models/proxy_binding.py` | `proxy_bindings` | 账号代理绑定。 |
+| `backend/app/models/fetch_schedule.py` | `fetch_schedules` | 自动小时调度配置。 |
+| `backend/app/models/collector_sync_task.py` | `collector_sync_tasks` | 中台任务表。 |
+| `backend/app/models/collector_sync_log.py` | `collector_sync_logs` | 任务日志。 |
+| `backend/app/models/collector_ingestion_batch.py` | `collector_ingestion_batches` | batch 元数据和 payload hash。 |
+| `backend/app/models/account_hourly_report.py` | `account_hourly_reports` | 账户小时事实表。 |
+| `backend/app/models/site_hourly_report.py` | `site_hourly_reports` | 站点小时事实表。 |
+| `backend/app/models/account_daily_report.py` | `account_daily_reports` | 账户权威日报事实表。 |
+| `backend/app/models/site_daily_report.py` | `site_daily_reports` | 站点权威日报事实表。 |
+| `backend/app/models/__init__.py` | - | 导入模型，保证 Alembic / metadata 能发现表。 |
+
+### 6.4 Alembic migration
+
+| 文件 | 作用 |
+|---|---|
+| `backend/alembic/env.py` | Alembic 环境入口，绑定 SQLAlchemy metadata。 |
+| `backend/alembic/script.py.mako` | migration 模板。 |
+| `backend/alembic/versions/*.py` | 表结构演进记录。 |
+
+重要 migration：
+
+- `20260522_0001_phase1_foundation.py`：基础账号、实例、任务等。
+- `20260522_0002_oauth_authorization_state.py`：OAuth 授权状态。
+- `20260608_0006_mid_platform_node_config.py`：中台节点 report 配置。
+- `20260623_0008_add_fetch_schedules.py`：小时 schedule。
+- `20260623_0009_hourly_fact_timezone_dimensions.py`：小时事实表时区维度。
+- `20260626_0010_add_requests_metric_columns.py`：requests 指标。
+
+### 6.5 Backend 测试
+
+| 文件 | 覆盖范围 |
+|---|---|
+| `backend/tests/test_collector_router.py` | API 路由、operator 操作、collector callback、报表接口。 |
+| `backend/tests/test_fetch_scheduler.py` | 自动小时调度、权威日报调度、灰度/排除名单、stale 任务回收。 |
+| `backend/tests/test_ingestion_service.py` | batch 入库、小时/日报投影、幂等。 |
+| `backend/tests/test_oauth_service.py` | OAuth URL、callback、token 兑换逻辑。 |
+| `backend/tests/test_models.py` | ORM 模型基础关系。 |
+| `backend/tests/test_database.py` | DB 初始化和连接。 |
+| `backend/tests/test_virtual_flow_script.py` | 本地虚拟端到端流程。 |
+
+改后端常见测试命令：
+
+```bash
+cd backend
+python -m pytest tests/test_fetch_scheduler.py -q
+python -m pytest tests/test_ingestion_service.py -q
+python -m pytest tests/test_collector_router.py -q
+```
+
+## 7. Collector 文件导览
+
+### 7.1 一次性 runtime
+
+| 文件 | 作用 | 维护关注点 |
+|---|---|---|
+| `collector/app/main.py` | 一次性 collector runtime 入口。获取 runtime config，执行一个任务。 | 控制面启动子进程、任务消费问题看这里。 |
+| `collector/app/runtime.py` | CollectorRuntime 主流程。领取任务、调用 fetcher、上传 batch、回写状态。 | 任务卡在 pending/in_progress、batch 未上传、状态未回写看这里。 |
+| `collector/app/control_plane_client.py` | 调用控制面 API 的客户端。 | 控制面连接失败、认证失败、callback 失败看这里。 |
+| `collector/app/config.py` | runtime 配置和 bootstrap 配置。 | env、runtime config 字段变化看这里。 |
+| `collector/app/models.py` | runtime 内部数据结构。 | 控制面 config 到 runtime settings 的映射看这里。 |
+
+### 7.2 Google 拉取实现
+
+| 文件 | 作用 | 维护关注点 |
+|---|---|---|
+| `collector/app/fetcher.py` | fetcher 选择器。按 task type 调用小时或日报 fetch。 | 新增 fetch mode 或改小时/日报分流看这里。 |
+| `collector/app/admanager_soap.py` | Google Ad Manager SOAP 报表定义、下载、CSV 解析。 | 报表字段、维度、指标、Google 返回异常看这里。 |
+| `collector/app/admanager_api.py` | 早期 REST/Beta API fetcher。 | 目前生产主链路多用 SOAP，维护时先确认是否仍被使用。 |
+| `collector/app/adx_report_service.py` | 报表服务封装。把 SOAP rows 转为 batch rows。 | batch 格式、日报/小时字段映射看这里。 |
+| `collector/app/oauth.py` | 用 refresh token 获取 access token。 | `invalid_grant`、token expired、代理下 token 刷新失败看这里。 |
+| `collector/app/proxy.py` | 代理配置结构。 | SOCKS/HTTP 代理格式和请求配置看这里。 |
+| `collector/app/egress.py` | 出口 IP 检查。 | 代理出口 IP 不匹配看这里。 |
+
+### 7.3 节点常驻 API
+
+| 文件 | 作用 | 维护关注点 |
+|---|---|---|
+| `collector/app/vps_api.py` | 每个节点的 FastAPI 服务。提供 `/health`、`/public/fetch.php`、`/public/report.php`、`/internal/fetch`。 | 节点服务健康、PHP 兼容入口、节点 snapshot 查询看这里。 |
+| `collector/app/vps_config.py` | 节点 API env 配置。 | `ADX_VPS_DATABASE_URL`、端口、trigger token 看这里。 |
+| `collector/app/vps_database.py` | 节点 MySQL session factory。 | 节点库连接问题看这里。 |
+| `collector/app/vps_models.py` | 节点 MySQL ORM。`adx_accounts`、`adx_fetch_runs`、`adx_site_daily_reports`。 | 节点库 schema、运行状态、snapshot 表看这里。 |
+| `collector/app/vps_repository.py` | 节点库读写封装。 | fetch run 状态、site rows 查询看这里。 |
+| `collector/app/vps_service.py` | 节点 API 业务逻辑。创建/执行 fetch run，写节点库 snapshot。 | 节点 `/ke/fetch.php` 返回失败、active run 冲突看这里。 |
+| `collector/app/vps_proxy_resolver.py` | 从节点库解析代理配置。 | 节点真实拉数代理是否生效看这里。 |
+
+### 7.4 Collector 测试
+
+| 文件 | 覆盖范围 |
+|---|---|
+| `collector/tests/test_runtime.py` | 一次性 runtime 主流程。 |
+| `collector/tests/test_fetcher.py` | fetcher 分流和 batch 生成。 |
+| `collector/tests/test_admanager_soap.py` | SOAP 查询和 CSV 解析。 |
+| `collector/tests/test_adx_report_service.py` | 报表服务字段映射。 |
+| `collector/tests/test_oauth.py` | OAuth refresh token 刷新。 |
+| `collector/tests/test_proxy.py` | 代理配置。 |
+| `collector/tests/test_vps_api.py` | 节点 API。 |
+| `collector/tests/test_vps_service.py` | 节点 fetch run 生命周期。 |
+| `collector/tests/test_vps_models.py` | 节点 ORM。 |
+
+常用测试命令：
+
+```bash
+cd collector
+python -m pytest tests/test_runtime.py tests/test_fetcher.py tests/test_admanager_soap.py -q
+python -m pytest tests/test_vps_api.py tests/test_vps_service.py -q
+```
+
+## 8. Frontend 文件导览
+
+前端是运维控制台，不是 user_system。维护重点是帮助 operator 创建账号、OAuth、实例、代理、任务，并查看报表。
+
+| 文件 | 作用 |
+|---|---|
+| `frontend/src/main.tsx` | React 入口。 |
+| `frontend/src/App.tsx` | 应用根组件。 |
+| `frontend/src/router.tsx` | 页面路由。 |
+| `frontend/src/pages/OperationsPage.tsx` | 运维操作页，聚合账号、OAuth、实例、代理、任务、schedule。 |
+| `frontend/src/pages/ReportsPage.tsx` | 报表查看页。 |
+| `frontend/src/pages/OAuthCallbackPage.tsx` | 前端 OAuth callback 页面。 |
+| `frontend/src/lib/api.ts` | 调用后端 API 的封装。 |
+| `frontend/src/lib/errorMessages.ts` | 错误信息显示。 |
+| `frontend/src/lib/format.ts` | 格式化函数。 |
+| `frontend/src/lib/oauth.ts` | OAuth 前端辅助逻辑。 |
+| `frontend/src/lib/operatorGuidance.ts` | 操作提示文案。 |
+| `frontend/src/types/api.ts` | 前端 API 类型。 |
+| `frontend/src/styles.css` | 全局样式。 |
+
+功能组件：
+
+| 文件 | 作用 |
+|---|---|
+| `frontend/src/features/accounts/AccountsSection.tsx` | 账号管理。 |
+| `frontend/src/features/oauth/OAuthAppsSection.tsx` | OAuth app 和授权。 |
+| `frontend/src/features/instances/InstancesSection.tsx` | collector instance 管理。 |
+| `frontend/src/features/proxies/ProxiesSection.tsx` | 代理绑定。 |
+| `frontend/src/features/tasks/TasksSection.tsx` | 任务查看和创建。 |
+| `frontend/src/features/fetch/FetchSchedulesSection.tsx` | 小时 schedule 管理。 |
+| `frontend/src/features/reports/AccountDailySection.tsx` | 账户日报展示。 |
+| `frontend/src/features/reports/SiteDailySection.tsx` | 站点日报展示。 |
+| `frontend/src/features/reports/NodeResultsSection.tsx` | 节点结果展示。 |
+| `frontend/src/features/reports/SummarySection.tsx` | 汇总展示。 |
+
+UI 组件：
+
+| 文件 | 作用 |
+|---|---|
+| `frontend/src/components/layout/AppShell.tsx` | 页面框架。 |
+| `frontend/src/components/ui/CopyButton.tsx` | 复制按钮。 |
+| `frontend/src/components/ui/Field.tsx` | 字段显示。 |
+| `frontend/src/components/ui/SectionCard.tsx` | 区块容器。 |
+| `frontend/src/components/ui/StatusBadge.tsx` | 状态标签。 |
+| `frontend/src/components/ui/ToastProvider.tsx` / `useToast.ts` | toast 提示。 |
+
+前端测试：
+
+| 文件 | 覆盖范围 |
+|---|---|
+| `frontend/src/__tests__/oauth.test.ts` | OAuth 前端流程。 |
+| `frontend/src/__tests__/errorMessages.test.ts` | 错误信息。 |
+| `frontend/src/__tests__/format.test.ts` | 格式化。 |
+| `frontend/src/__tests__/operatorGuidance.test.ts` | 运维提示文案。 |
+
+常用命令：
+
+```bash
+cd frontend
+npm install
+npm run test
+npm run build
+```
+
+## 9. Deploy 文件导览
+
+| 文件 | 作用 |
+|---|---|
+| `deploy/docker-compose.yml` | 本地 Docker 编排。 |
+| `deploy/backend/Dockerfile` | backend 镜像。 |
+| `deploy/collector/Dockerfile` | collector 镜像。 |
+| `deploy/README.md` | 本地部署说明。 |
+| `deploy/vps/README.md` | VPS 节点部署说明。 |
+| `deploy/vps/systemd/adx-fetch-api.service` | 节点 systemd 服务模板。 |
+| `deploy/vps/env/adx-fetch-api.env.example` | 节点 env 示例。 |
+| `deploy/vps/cron/run-fetch.sh` | 早期 cron 拉取脚本。生产当前主要由中台 schedule 触发。 |
+| `deploy/vps/cron/adx-fetch-cron.env.example` | cron env 示例。 |
+| `deploy/vps/php/fetch.php` | PHP 兼容 fetch 入口。 |
+| `deploy/vps/php/report.php` | PHP 兼容 report 入口。 |
+| `deploy/vps/php/oauth-callback-download.php` | OAuth callback 下载 JSON 辅助页。 |
+| `deploy/vps/nginx/api.example.conf` | Nginx 示例。 |
+| `deploy/vps/sql/single-account-node-template.sql.example` | 节点 MySQL 初始化示例。 |
+
+## 10. Scripts 文件导览
+
+| 文件 | 作用 |
+|---|---|
+| `scripts/virtual_flow.py` | 本地虚拟端到端流程，不依赖真实 Google。适合新同事体验任务生命周期。 |
+| `scripts/init_vps_schema.py` | 初始化节点 MySQL schema。 |
+| `scripts/migrate_hourly_timezone.py` | 小时时区字段迁移辅助脚本。 |
+| `scripts/sync_prod_data_to_local.py` | 同步生产数据到本地排查。使用前注意敏感信息和目标库。 |
+
+## 11. 关键生产路径和服务名
+
+生产路径以 SOP 为准，当前常用路径：
+
+```text
+项目根目录：
+/srv/adx-account-isolated-collector
+
+控制面：
+/srv/adx-account-isolated-collector/backend
+
+控制面数据库：
+/srv/adx-account-isolated-collector/backend/control_plane.db
+
+节点 env：
+/srv/adx-account-isolated-collector/deploy/vps/env/adx-fetch-api-<account_key>.env
+
+节点代码：
+/srv/adx-account-isolated-collector/collector
+```
+
+常用 systemd：
+
+```text
+adx-control-plane.service
+adx-fetch-api-<account_key>.service
+```
+
+健康检查：
+
+```bash
+curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://127.0.0.1:<node_port>/health
+```
+
+## 12. 常见数据排查路径
+
+### 12.1 查一个节点的基础配置
+
+核心对象：
+
+- account
+- collector instance
+- OAuth app
+- proxy binding
+- fetch schedule
+
+建议查询顺序：
+
+```text
+collector_instances.report_account_key
+  -> account_id
+  -> oauth_app_configs
+  -> proxy_bindings
+  -> fetch_schedules
+```
+
+### 12.2 查小时任务是否正常
+
+看三层：
+
+1. `collector_sync_tasks` 是否有 `report_fetch_hourly` 任务。
+2. `collector_ingestion_batches` 是否有 batch。
+3. `account_hourly_reports` / `site_hourly_reports` 是否有实际维度行。
+
+注意：Google 返回 0 行时，任务可以是 succeeded，batch row_count 可以是 0，本地小时事实表不会凭空写 0 维度行。
+
+### 12.3 查权威日报是否正常
+
+看三层：
+
+1. 是否存在成功的 `report_fetch` 任务。
+2. 是否有 batch。
+3. `account_daily_reports` / `site_daily_reports` 是否有本地权威日报结果。
+
+不要只因为 `account_daily_reports` 有数据就判断权威日报已经正式完成；要结合 `report_fetch` 成功任务。
+
+### 12.4 查授权失败
+
+典型错误：
+
+```text
+invalid_grant: Token has been expired or revoked.
+invalid_grant: Bad Request
+redirect_uri_mismatch
+```
+
+处理路径：
+
+1. 生成授权 URL。
+2. 用户完成授权，返回完整 callback URL 或 callback JSON。
+3. 确认 state 和 redirect_uri 与生产 OAuth app 匹配。
+4. 兑换 code。
+5. 更新控制面 OAuth。
+6. 同步最新 refresh token 到节点 MySQL `adx_accounts`。
+7. 重启节点服务。
+8. 跑一次真实小时任务验证。
+
+### 12.5 查任务卡住
+
+判断标准：
+
+- `pending` 超过 10 分钟需要关注。
+- `in_progress` 超过 20 分钟需要排查。
+- 2 小时以上 stale 任务应由 scheduler 自动标失败。
+
+排查路径：
+
+1. 查任务状态、created_at、started_at。
+2. 查 `collector_sync_logs`。
+3. 查是否有 runtime 进程。
+4. 查 `adx-control-plane.service` 日志。
+5. 查节点 service 是否健康。
+6. 必要时把明确卡死的任务标 failed，并写日志说明。
+
+## 13. 灰度名单、停拉名单和 schedule 的关系
+
+当前代码名单在：
+
+```text
+backend/app/collectors/service.py
+```
+
+关键常量：
+
+```python
+TARGETED_BACKFILL_ACCOUNT_KEYS
+INVALID_GRANT_DO_NOT_FETCH_ACCOUNT_KEYS
+MANUAL_DO_NOT_FETCH_ACCOUNT_KEYS
+AUTOMATIC_DAILY_FETCH_EXCLUDED_ACCOUNT_KEYS
+```
+
+规则：
+
+| 状态 | 小时自动任务 | 权威日报自动任务 |
+|---|---|---|
+| 在灰度名单，schedule enabled | 会自动每小时创建小时任务 | 会参与权威日报扫描 |
+| 在灰度名单，schedule disabled | 不会自动创建小时任务 | 会参与权威日报扫描 |
+| 在停拉排除名单 | 不应拉取数据 | 不应参与自动日报 |
+| 不在灰度名单 | 不参与灰度默认补跑 | 不参与自动日报扫描 |
+
+如果业务目标是“进入灰度后自动每小时拉实时数据 + 自动权威日报”，需要同时确认：
+
+```text
+1. 节点在 TARGETED_BACKFILL_ACCOUNT_KEYS
+2. 节点不在 AUTOMATIC_DAILY_FETCH_EXCLUDED_ACCOUNT_KEYS
+3. fetch_schedules.enabled = true
+4. fetch_schedules.interval_hours = 1
+5. OAuth authorized 且 refresh token 可用
+6. 节点 service /health ok
+```
+
+## 14. 修改代码时的定位指南
+
+| 需求 | 优先看哪些文件 |
+|---|---|
+| 改 operator API | `backend/app/collectors/router.py`、`service.py`、`schemas.py`、`backend/tests/test_collector_router.py` |
+| 改小时自动调度 | `backend/app/collectors/scheduler.py`、`service.py`、`backend/tests/test_fetch_scheduler.py` |
+| 改权威日报自动调度 | `scheduler.py`、`service.py`、`backend/tests/test_fetch_scheduler.py` |
+| 改 batch 入库 | `ingestion_service.py`、报表模型、`backend/tests/test_ingestion_service.py` |
+| 改 OAuth | `oauth_service.py`、`schemas.py`、`backend/tests/test_oauth_service.py` |
+| 改 Google 报表字段 | `collector/app/admanager_soap.py`、`adx_report_service.py`、`fetcher.py`、collector tests、backend ingestion tests |
+| 改节点 API | `collector/app/vps_api.py`、`vps_service.py`、`vps_repository.py`、collector VPS tests |
+| 改前端展示 | `frontend/src/features/*`、`frontend/src/lib/api.ts`、`frontend/src/types/api.ts` |
+| 改数据库结构 | ORM model、Alembic migration、相关 tests、生产迁移 SOP |
+
+## 15. 本地开发建议
+
+### 15.1 后端
+
+```bash
+cd backend
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+python -m pytest -q
+```
+
+如果从仓库根目录跑后端测试出现 `No module named app`，切到 `backend/` 目录再跑。
+
+### 15.2 Collector
+
+```bash
+cd collector
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+python -m pytest -q
+```
+
+### 15.3 Frontend
+
+```bash
+cd frontend
+npm install
+npm run test
+npm run build
+```
+
+## 16. 交接人应该提供哪些信息
+
+把系统交给新同事时，至少提供：
+
+1. 生产机器地址和登录方式。敏感信息不要写进 Git。
+2. 当前控制面服务名和节点服务命名规则。
+3. 当前灰度名单。
+4. 当前停拉排除名单。
+5. 当前 user_system 使用的中台 API。
+6. 当前最近三天各灰度节点小时任务和权威日报状态。
+7. 当前授权失效或待处理节点。
+8. 当前本地未发布代码改动和生产已手工变更记录。
+9. 最近一次数据库备份位置。
+10. 最近一次线上发布文件清单。
+
+## 17. 新同事上手练习任务
+
+建议安排 5 个练习任务，由老同事旁路 review。
+
+### 练习 1：只读巡检
+
+目标：
+
+- 查灰度名单。
+- 查停拉名单。
+- 查所有灰度节点 schedule。
+- 查最近 24 小时小时任务。
+- 查最近一个权威业务日的日报任务。
+
+验收：
+
+- 能列出异常节点和异常原因。
+- 不做任何写操作。
+
+### 练习 2：追踪一个成功小时任务
+
+目标：
+
+- 找一个成功 `report_fetch_hourly` task。
+- 找到对应 batch。
+- 找到对应 `account_hourly_reports` 和 `site_hourly_reports`。
+
+验收：
+
+- 能解释 batch row_count 和事实表 rows 的区别。
+
+### 练习 3：处理一次授权失效
+
+目标：
+
+- 找到 `invalid_grant` 节点。
+- 生成授权 URL。
+- 导入 callback。
+- 同步节点库。
+- 跑真实任务验证。
+
+验收：
+
+- 控制面 OAuth authorized。
+- 节点库 refresh token 已同步。
+- 真实任务 succeeded。
+
+### 练习 4：补跑两天小时数据
+
+目标：
+
+- 为指定节点补跑两个业务日小时数据。
+- 避免撞旧失败任务的 `external_request_id`。
+- 验证 batch 和本地事实表。
+
+验收：
+
+- 能说明 0 行成功和失败的区别。
+
+### 练习 5：小改动带测试
+
+目标：
+
+- 改一个低风险行为，例如调整测试里的灰度样本。
+- 跑对应测试。
+- 写清楚改动影响。
+
+验收：
+
+- 测试通过。
+- 不影响生产未授权节点。
+
+## 18. 不要做的事
+
+1. 不要把 SSH 密码、OAuth token、代理密码写进 Git。
+2. 不要跳过备份直接改生产 SQLite。
+3. 不要把停拉账号加入自动拉取流程。
+4. 不要用小时表聚合结果冒充权威日报。
+5. 不要在不了解 `external_request_id` 唯一约束时重复创建同名任务。
+6. 不要看到 `authorization_status=authorized` 就假设 refresh token 一定可用；必须真实拉取验证。
+7. 不要只看任务 succeeded 就认为有数据；还要看 batch row_count 和事实表。
+8. 不要只改灰度名单却忘了 schedule。
+9. 不要直接改生产代码后不重启服务。
+10. 不要在 dirty worktree 里随手回滚别人的改动。
+
+## 19. 最短接手路线
+
+如果新同事只有半天时间，按这个最短路线：
+
+1. 读本文第 1-5 节。
+2. 读 `docs/production-operations-and-development-sop.md` 第 3-5 节。
+3. 读 `backend/app/collectors/service.py` 顶部名单和任务相关函数。
+4. 读 `backend/app/collectors/scheduler.py`。
+5. 读 `backend/app/collectors/ingestion_service.py`。
+6. 在生产只读查询一次：
+   - 灰度名单
+   - 停拉名单
+   - schedule
+   - 最近任务
+   - 最近入库数据
+7. 再开始接具体问题。
+
+## 20. 文档地图
+
+| 文档 | 什么时候读 |
+|---|---|
+| `docs/production-operations-and-development-sop.md` | 日常生产运维、巡检、排障、发布。 |
+| `docs/standard-node-onboarding-and-proxy-fetch-sop.md` | 新节点接入、代理、OAuth、节点库、灰度。 |
+| `docs/oauth-callback-json-workflow.md` | OAuth callback JSON 文件处理。 |
+| `docs/2026-07-12-automatic-authoritative-daily-fetch-rollout.md` | 自动权威日报功能背景。 |
+| `docs/2026-07-17-authoritative-daily-completion-fix.md` | 权威日报完成判定修复背景。 |
+| `docs/2026-06-23-mid-platform-hourly-interface-contract-for-user-system.md` | user_system 对接小时接口时读。 |
+| `docs/operator-notes.md` | 早期 operator 流程说明，可作为补充。 |
+| `docs/new-node-onboarding-sop-template.md` | 老版节点接入模板，当前以 standard SOP 为准。 |
+
+## 21. 接手后的维护原则
+
+1. 先看生产事实，再下结论。
+2. 先区分小时实时数据和权威日报。
+3. 先查任务，再查 batch，再查事实表。
+4. 先确认授权和代理，再判断 Google 是否无数据。
+5. 先停住无效自动任务，再做重授权和补跑。
+6. 任何生产写操作先备份、后执行、再验证。
+7. 任何代码变更先补测试或更新测试，再发布。
+8. 文档要跟着行为变化更新，尤其是灰度、停拉、权威日报规则。
+9. 代码流固定为：本地隔离工作区 `dev` 开发 → 本地测试 → 独立审阅 → Git 提交 → 合并 `master` → 新服务器从 `master` 同步 → 灰度验证。不得从运行目录开发或以未提交内容部署。
+10. 新服务器仅承担 `master` 发布运行；旧服务器已停止生产，仅可承担隔离测试，不得启用生产 scheduler、正式采集任务或生产数据库写入。
+
+## 22. 功能/代码变更记录（追加式台账）
+
+每次功能、代码、配置或数据库结构修改都必须在本节**追加**一条记录；不得覆盖历史记录。记录应在代码审阅通过、Git 提交和部署前补齐，发布后再补充实际验证结果。敏感信息只写标识或脱敏摘要，绝不写密码、Token、OAuth 回调内容、代理完整凭据或生产数据。
+
+### 记录模板
+
+```markdown
+### YYYY-MM-DD — <变更标题>
+
+- 状态：方案中 / 审阅中 / 已提交待发布 / 灰度中 / 已发布 / 已回滚
+- 需求或问题：<链接、编号或简述>
+- 变更内容：<修改了什么功能、代码路径、配置或数据结构>
+- 修改原因：<为什么现在要改>
+- 实施方案：<关键步骤、迁移顺序；涉及 Google 拉取时注明测试账号标识和代理标识，不记录凭据>
+- 预期结果与实施后果：<预期行为、已知副作用、兼容性变化>
+- 影响范围：<用户、接口、节点、任务、数据库表、服务、性能与安全影响>
+- 验证与测试：<本地命令及结果；真实拉取测试的账号/代理标识、任务/batch/数据核验结果>
+- 独立审阅：<审阅者或独立审阅任务、日期、结论、已处理问题；无阻塞问题后方可测试/提交/部署>
+- Git：<分支、提交号；部署前必须已有提交>
+- 发布与回滚：<灰度范围、发布时间、健康检查、回滚方案及实际结果>
+```
+
+### 2026-08-02 — 建立统一维护与开发治理规则
+
+- 状态：审阅中
+- 需求或问题：统一项目背景、架构、实施方案与后续维护开发规范。
+- 变更内容：在本指南新增第 1.1 节强制开发治理流程和第 22 节追加式变更台账；新增仓库根目录 `AGENTS.md`，使后续任务默认遵守相同规则。
+- 修改原因：确保新接手开发人员能够快速定位系统资料，并使每次功能变更在审阅、测试、Git 提交和部署前均有一致、可追溯的质量门禁。
+- 实施方案：以本指南作为唯一维护总入口；以 `AGENTS.md` 作为任务启动约束；要求本地开发、受控 Google 测试、独立审阅、Git 提交和发布验证按固定顺序执行。
+- 预期结果与实施后果：后续改动将增加必要的文档和审阅工作量，但能降低未审阅代码、未提交发布、凭据泄露及生产探测性测试的风险。
+- 影响范围：影响本仓库全部后续开发与发布流程；不改变运行时代码、数据库结构或现有生产服务。
+- 验证与测试：已核对指南中的系统架构、目录职责、关键链路、开发建议和文档地图均保留；已核对根目录规则指向本节并覆盖本次提出的全部强制要求。
+- 独立审阅：待独立审阅；在该文档自身提交/发布前应完成独立审阅并将结论更新到此处。
+- Git：待提交。
+- 发布与回滚：无需运行时发布；若规则表述需调整，可通过后续 Git 提交修改文档并保留本条历史记录。
+### 2026-08-02 — 形成 GAM Service Account PoC 设计与实施文档
+- 状态：方案中
+- 需求或问题：针对当前 GAM 拉数 refresh token 时效与恢复成本问题，评估并设计 Service Account PoC 落地路径。
+- 变更内容：新增 `docs/superpowers/specs/2026-08-02-gam-service-account-poc-design.md` 和 `docs/superpowers/plans/2026-08-02-gam-service-account-poc-implementation.md`，明确当前项目基础上的 SA 可行性判断、推荐架构、风险、验证标准、实施任务和回滚原则。
+- 修改原因：把“SA 是否值得做、如何做、做到什么边界、如何验证和回滚”沉淀成可评审、可执行文档，避免后续 PoC 在认证模型、真实测试门禁和 SOAP 生命周期判断上反复返工。
+- 实施方案：基于当前仓库代码结构、既有 OAuth/SOAP 链路和维护治理规则，输出一份设计文档和一份实施计划；计划坚持 OAuth 现网不动、SA 仅做测试账号白名单 PoC、真实测试晚于独立审阅。
+- 预期结果与实施后果：团队可以先评审文档再决定是否进入代码 PoC；短期会增加一套候选认证模型的设计复杂度，但能降低凭空开工或直接全量切换的风险。
+- 影响范围：当前仅影响设计文档、实施计划和维护台账；不改变后端、节点、前端、数据库或生产服务行为。
+- 验证与测试：已本地核对设计文档覆盖背景、目标、非目标、方案对比、推荐架构、安全约束、验证路径和回滚原则；已核对实施计划覆盖 schema、model、migration、collector、控制面、SOP、独立审阅和真实测试顺序。未运行自动化测试，因本次仅文档变更。
+- 独立审阅：待独立审阅；进入任何代码实现或真实账号测试前，必须先对该设计与实施计划完成独立审阅并记录结论。
+- Git：待提交。
+- 发布与回滚：无需运行时发布；若评审后否决 SA PoC，可仅通过后续 Git 提交修订或归档文档，不涉及线上回滚。
+
+### 2026-08-02 — 国家与广告单元维度明细报表
+
+- 状态：独立审阅通过，待 Git 提交与发布审批。
+- 需求或问题：为 `user_system` 新增国家 × 广告单元的小时明细和权威日报明细，并提供覆盖率、点击率、曝光率；历史数据不回补。
+- 变更内容：新增两张权威日报维度事实表及迁移；采集端保留核心日报批次并新增独立维度日报批次；新增四个维度查询 API，支持筛选、单日或最长 31 天范围、稳定数据库分页与小时 UTC/源时区字段。
+- 修改原因：现有聚合日报无法满足按国家和广告单元定位投放表现的需求。
+- 实施方案：日报维度只使用上游权威日报；维度快照按账号、日期和来源替换；小时维度读取既有小时事实；分母为零的三项比率返回 `0.0`；维度首批写入不清除核心日报或小时汇总。
+- 预期结果与实施后果：新增 API 不改变旧聚合 API 契约；数据库增加维度明细存储与受控范围查询负载，分页使用数据库 `COUNT(*)`、`OFFSET/LIMIT` 限制单次读取。
+- 影响范围：控制面后端、collector、Alembic、维度报表 API 与 `user_system` 对接；不涉及历史数据回填或生产调度变更。
+- 验证与测试：后端全量 `pytest tests -q` 141 通过；采集端全量 `pytest tests -q` 89 通过；覆盖双日报链、快照替换、小时汇总保留、筛选、范围、分页、三项比率和零分母。
+- 独立审阅：第四轮独立审阅通过；快照误删小时汇总与内存分页问题均已通过 TDD 整改并复审关闭。
+- Git：当前分支 `dev`，待提交；部署前必须完成提交并合并到 `master`。
+- 发布与回滚：尚未部署或真实 Google 拉取。发布前须获得明确批准并提供指定测试账号与代理标识；回滚为停止新 API 使用、回退 `master` 至上一已验证提交，新增维度表不影响旧报表表。

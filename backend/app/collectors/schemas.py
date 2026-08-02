@@ -715,6 +715,44 @@ class MidPlatformLinkDailyReportResponse(BaseModel):
     items: list[MidPlatformLinkDailyRow]
 
 
+class DimensionReportRow(BaseModel):
+    account_id: int
+    report_date: date
+    site_name: str | None = None
+    ad_country_code: str
+    ad_country_name: str
+    ad_slot_id: str
+    ad_slot_name: str
+    source_kind: str
+    responses_served: int
+    requests: int
+    impressions: int
+    clicks: int
+    revenue: float
+    ecpm: float
+    coverage_rate: float
+    click_through_rate: float
+    impression_rate: float
+    coverage_hours: int
+    expected_hours: int
+    is_complete: bool
+    hour: int | None = None
+    report_time_utc: datetime | None = None
+    source_timezone: str | None = None
+
+
+class DimensionReportResponse(BaseModel):
+    report_date: date | None
+    start_date: date
+    end_date: date
+    dimension_data_available: bool
+    available_from: date | None
+    page: int
+    page_size: int
+    total: int
+    items: list[DimensionReportRow]
+
+
 class HeartbeatRequest(BaseModel):
     status: Literal["provisioning", "ready", "blocked", "offline"] | None = None
     observed_egress_ip: str | None = None
