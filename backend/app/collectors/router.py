@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from datetime import date
+from hmac import compare_digest
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.collectors import ingestion_service, oauth_service, schemas, service
-from app.collectors.security import get_authenticated_instance, require_operator_authentication
+from app.collectors.security import (
+    OPERATOR_SESSION_COOKIE,
+    get_authenticated_instance,
+    issue_operator_session,
+    require_operator_authentication,
+)
 from app.config import get_settings
 from app.database import get_db
 from app.models.account import Account
@@ -14,6 +20,36 @@ from app.models.collector_instance import CollectorInstance
 
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_operator_authentication)])
+auth_router = APIRouter(prefix="/api/v1/operator/auth")
+
+
+@auth_router.post("/login", response_model=schemas.OperatorSessionRead)
+def login_operator(payload: schemas.OperatorLoginRequest, response: Response) -> schemas.OperatorSessionRead:
+    settings = get_settings()
+    if not settings.operator_api_token or not compare_digest(payload.password, settings.operator_api_token):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid operator token")
+    response.set_cookie(
+        key=OPERATOR_SESSION_COOKIE,
+        value=issue_operator_session(),
+        max_age=settings.operator_session_ttl_seconds,
+        httponly=True,
+        secure=settings.app_env == "production",
+        samesite="strict",
+        path="/",
+    )
+    return schemas.OperatorSessionRead(authenticated=True)
+
+
+@auth_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout_operator() -> Response:
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    response.delete_cookie(key=OPERATOR_SESSION_COOKIE, path="/", httponly=True, samesite="strict")
+    return response
+
+
+@auth_router.get("/session", response_model=schemas.OperatorSessionRead, dependencies=[Depends(require_operator_authentication)])
+def get_operator_session() -> schemas.OperatorSessionRead:
+    return schemas.OperatorSessionRead(authenticated=True)
 
 
 @router.post("/operator/accounts", response_model=schemas.AccountRead, status_code=status.HTTP_201_CREATED)

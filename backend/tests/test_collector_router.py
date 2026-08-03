@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app import models as _models  # noqa: F401
 from app.database import Base, get_db
+from app.collectors.security import is_valid_operator_session
 from app.main import create_app
 from app.models.account_daily_report import AccountDailyReport
 from app.models.account_hourly_report import AccountHourlyReport
@@ -73,6 +74,42 @@ def test_operator_routes_require_operator_authentication(client: TestClient) -> 
     response = client.get("/api/v1/operator/accounts", headers={"X-ADX-Operator-Token": "wrong-token"})
 
     assert response.status_code == 401
+
+
+def test_operator_login_issues_cookie_and_preserves_header_compatibility(client: TestClient) -> None:
+    invalid_login = client.post("/api/v1/operator/auth/login", json={"password": "wrong-token"})
+    assert invalid_login.status_code == 401
+    assert "adx_operator_session" not in invalid_login.headers.get("set-cookie", "")
+
+    login = client.post("/api/v1/operator/auth/login", json={"password": "test-operator-token"})
+    assert login.status_code == 200
+    assert login.json() == {"authenticated": True}
+    set_cookie = login.headers["set-cookie"]
+    assert "adx_operator_session=" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=strict" in set_cookie
+
+    client.headers.clear()
+    assert client.get("/api/v1/operator/auth/session").json() == {"authenticated": True}
+    assert client.get("/api/v1/operator/accounts").status_code == 200
+
+    logout = client.post("/api/v1/operator/auth/logout")
+    assert logout.status_code == 204
+    assert client.get("/api/v1/operator/auth/session").status_code == 401
+    assert client.get("/api/v1/operator/accounts").status_code == 401
+
+    legacy_header = client.get("/api/v1/operator/accounts", headers={"X-ADX-Operator-Token": "test-operator-token"})
+    assert legacy_header.status_code == 200
+
+    oauth_callback = client.get(
+        "/api/v1/oauth/google/callback",
+        params={"state": "missing-state", "code": "authorization-code", "iss": "https://accounts.google.com"},
+    )
+    assert oauth_callback.status_code == 400
+
+
+def test_operator_session_rejects_non_ascii_cookie_value() -> None:
+    assert is_valid_operator_session("\u2603") is False
 
 
 def test_operator_and_collector_workflow_happy_path(client: TestClient) -> None:

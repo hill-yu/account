@@ -924,3 +924,31 @@ npm run build
 - systemd 要求：以服务器实际 unit 为权威，逐项核对 `WorkingDirectory`、`EnvironmentFile`、`ExecStart`、运行用户和权限；scheduler 必须使用与 Web 相同的实际环境文件，并在启动前完成 schema-ready 门禁。
 - 影响与回滚：本规则增加发布前检查步骤，但避免因配置覆盖导致 API 中断、scheduler 无法启动或任务被错误推进。若同步失败，先恢复 `.env` 和服务健康，再继续任何迁移或调度动作。
 - 验证：本次已从迁移前备份恢复环境文件和 Operator Token，控制面健康恢复；scheduler 模板路径已修正为运行目录 `.env` 并成功启动。
+
+### 2026-08-03 — 单一管理员登录会话支持
+
+- 状态：独立审阅通过，待 Git 提交，未发布。
+- 需求或问题：控制台没有安全的登录入口，前端无法使用 operator API；后台仅需要一个管理员。
+- 变更内容：在 `backend/app/collectors/security.py` 增加服务端密钥控制的 HMAC 签名会话；在 `backend/app/collectors/router.py` 增加 login/logout/session 端点；控制台增加密码登录页、会话检查和退出登录。既有 `X-ADX-Operator-Token` 方式保留兼容。
+- 修改原因：仅有控制台地址不能构成可靠鉴权，且前端没有注入 Operator Token 的能力，导致管理员无法完成日常操作。
+- 实施方案：登录请求只在 HTTPS 提交一次 Operator Token，服务端使用常量时间比较验证并签发 12 小时 `HttpOnly`、`SameSite=Strict`、生产环境 `Secure` 的 Cookie。前端只发送同源 Cookie，不写入 localStorage、sessionStorage、打包配置或 Git。现有 OAuth callback 路由继续公开，不被前端登录门禁拦截。
+- 预期结果与实施后果：管理员登录后可使用全部 operator 控制台功能；Token 轮换会使无状态会话失效，用户需重新登录；旧脚本调用不受影响。
+- 影响范围：控制台和 `/api/v1/operator/*` 鉴权；不改变 Google 拉取、OAuth 凭证、采集运行时、调度、数据库或任务创建。
+- 验证与测试：后端定向 `pytest tests/test_collector_router.py -q` 为 39 passed；后端全量 `pytest tests -q` 为 145 passed；前端全量 `npm test` 为 22 passed；前端 `npm run build` 成功；`git diff --check` 通过。
+- 独立审阅：2026-08-03 独立审阅发现本地跨端口 Cookie 传递 P1 和畸形 Cookie P2，均已按 TDD 修复并复审通过；最终无 P0/P1。
+- Git：分支 `codex/single-admin-login`，待本条与代码一并提交。
+- 发布与回滚：本次未发布。发布前备份生产 `.env` 和运行目录清单，同步已提交的 `master`，验证 `/health`、登录 Cookie 和 operator API。回滚为回到上一 `master` 提交并重启 Web，不触碰 SQLite 或任务数据。
+
+### 2026-08-03 — 维度报表日期范围错误响应兼容修复
+
+- 状态：独立复审通过，待 Git 提交，未发布。
+- 需求或问题：后端全量回归显示维度报表超过 31 天的日期范围会因引用不存在的框架状态常量而抛出 500，未返回预期的 422。
+- 变更内容：`backend/app/collectors/service.py` 的三个日期范围校验分支及 `backend/app/collectors/ingestion_service.py` 的六个批次输入校验分支，统一改用当前依赖提供的 `HTTP_422_UNPROCESSABLE_ENTITY`。
+- 修改原因：保证无效的维度日期参数返回稳定的客户端错误，不将校验异常升级成服务器错误。
+- 实施方案：不改动日期范围规则、批次规则、查询、数据表或 API 成功响应；只替换错误状态常量。先以现有失败全量测试定位，再扫描并清除同类不兼容常量，运行定向测试和全量后端回归。
+- 预期结果与实施后果：无效日期范围和批次输入分支均返回 422；不影响有效日期范围、维度数据、采集任务或鉴权。
+- 影响范围：四个维度查询 API 的无效日期参数及 collector 批次输入错误响应；无数据库、调度、任务或安全影响。
+- 验证与测试：`tests/test_ingestion_service.py::test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups` 为 1 passed；后端全量 `pytest tests -q` 为 145 passed；`rg HTTP_422_UNPROCESSABLE_CONTENT backend/app` 无残留。
+- 独立审阅：2026-08-03 两轮独立复审通过；无 P0/P1，且已确认同类不兼容常量无残留。
+- Git：分支 `codex/single-admin-login`，待与登录功能一并提交。
+- 发布与回滚：本次未发布；回滚为还原该状态常量，不涉及数据恢复。

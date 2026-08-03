@@ -31,6 +31,10 @@ export interface ApiError extends Error {
   detail?: string;
 }
 
+export interface OperatorSession {
+  authenticated: boolean;
+}
+
 function resolveApiBaseUrl(): string {
   const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
   if (configuredBaseUrl) {
@@ -53,6 +57,7 @@ const API_BASE_URL = resolveApiBaseUrl();
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
+    credentials: init?.credentials ?? "include",
     headers: {
       "Content-Type": "application/json",
       ...(init?.headers ?? {}),
@@ -87,6 +92,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getOperatorSession: () => request<OperatorSession>("/api/v1/operator/auth/session"),
+  loginOperator: (password: string) =>
+    request<OperatorSession>("/api/v1/operator/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
+  logoutOperator: () => request<void>("/api/v1/operator/auth/logout", { method: "POST" }),
   listAccounts: () => request<AccountList>("/api/v1/operator/accounts"),
   createAccount: (payload: AccountCreate) =>
     request("/api/v1/operator/accounts", {

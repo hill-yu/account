@@ -1,6 +1,13 @@
 import { NavLink, Outlet } from "react-router-dom";
 
+import { api } from "../../lib/api";
+
 export function AppShell() {
+  async function handleLogout() {
+    await api.logoutOperator();
+    window.location.assign("/");
+  }
+
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
@@ -17,6 +24,9 @@ export function AppShell() {
             Reports
           </NavLink>
         </nav>
+        <button className="secondary-button" type="button" onClick={() => void handleLogout()}>
+          退出登录
+        </button>
       </aside>
       <main className="app-main">
         <Outlet />
