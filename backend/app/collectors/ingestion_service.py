@@ -255,7 +255,7 @@ def _project_payload_if_supported(
 
 def _normalize_admanager_daily_dimension_row(row: dict[str, Any], *, report_date: date, account: Account) -> dict[str, Any]:
     if date.fromisoformat(str(row.get("report_date"))) != report_date:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Batch row report_date mismatch")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Batch row report_date mismatch")
     try:
         # Authoritative daily rows are keyed by the account's configured GAM
         # report timezone.  A civil day can contain 23 or 25 hours at DST
@@ -263,7 +263,7 @@ def _normalize_admanager_daily_dimension_row(row: dict[str, Any], *, report_date
         expected_hours = service._expected_hours_for_timezone(report_date, account.timezone)
         return {"url_id": str(row["url_id"]), "url": str(row["url"]), "ad_country_code": str(row.get("ad_country_code") or "UNKNOWN"), "ad_country_name": str(row.get("ad_country_name") or "UNKNOWN"), "ad_slot_id": str(row.get("ad_slot_id") or "UNKNOWN"), "ad_slot_name": str(row.get("ad_slot_name") or "UNKNOWN"), "currency": account.currency, "responses_served": int(row["responses_served"]), "requests": int(row.get("requests", 0)), "impressions": int(row["impressions"]), "clicks": int(row["clicks"]), "revenue": Decimal(str(row["revenue"])), "ecpm": Decimal(str(row["ecpm"])), "expected_hours": expected_hours}
     except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Batch rows do not match admanager_daily_dimension_v1 schema") from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Batch rows do not match admanager_daily_dimension_v1 schema") from exc
 
 
 def _rebuild_account_daily_dimension_reports(db: Session, *, account_id: int, report_date: date) -> None:
@@ -279,7 +279,7 @@ def _rebuild_account_daily_dimension_reports(db: Session, *, account_id: int, re
 def _normalize_admanager_site_row(row: dict[str, Any], report_date: date) -> dict[str, Any]:
     row_report_date = row.get("report_date")
     if row_report_date is None or date.fromisoformat(str(row_report_date)) != report_date:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Batch row report_date mismatch")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Batch row report_date mismatch")
     try:
         return {
             "url_id": str(row["url_id"]),
@@ -292,7 +292,7 @@ def _normalize_admanager_site_row(row: dict[str, Any], report_date: date) -> dic
             "ecpm": Decimal(str(row["ecpm"])),
         }
     except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Batch rows do not match admanager_site_core_v1 schema") from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Batch rows do not match admanager_site_core_v1 schema") from exc
 
 
 def _normalize_admanager_hourly_site_row(
@@ -303,7 +303,7 @@ def _normalize_admanager_hourly_site_row(
 ) -> dict[str, Any]:
     row_report_date = row.get("report_date")
     if row_report_date is None or date.fromisoformat(str(row_report_date)) != report_date:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Batch row report_date mismatch")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Batch row report_date mismatch")
 
     try:
         hour = int(row["hour"])
@@ -343,7 +343,7 @@ def _normalize_admanager_hourly_site_row(
         }
     except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Batch rows do not match admanager_hourly_dimension_v1 schema",
         ) from exc
 

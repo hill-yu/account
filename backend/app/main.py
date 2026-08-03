@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.collectors.scheduler import FetchScheduler
-from app.collectors import router as collectors_router
+from app.collectors.router import auth_router, router as collectors_router
 from app.config import get_settings
 
 
@@ -71,6 +71,7 @@ def create_app(
     def healthcheck() -> dict[str, str]:
         return {"status": "ok"}
 
+    application.include_router(auth_router)
     application.include_router(collectors_router)
 
     return application

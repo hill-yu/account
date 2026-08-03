@@ -1877,12 +1877,12 @@ def _dimension_row(report: Any, *, site_name: str | None = None) -> schemas.Dime
 def _resolve_dimension_date_range(*, report_date: date | None, start_date: date | None, end_date: date | None) -> tuple[date, date]:
     if report_date is not None:
         if start_date is not None or end_date is not None:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Use report_date or start_date/end_date, not both")
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Use report_date or start_date/end_date, not both")
         return report_date, report_date
     if start_date is None or end_date is None or end_date < start_date:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="start_date and end_date must form a valid range")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="start_date and end_date must form a valid range")
     if (end_date - start_date).days > 30:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Dimension report date range cannot exceed 31 days")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Dimension report date range cannot exceed 31 days")
     return start_date, end_date
 
 

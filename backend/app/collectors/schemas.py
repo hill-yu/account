@@ -117,6 +117,14 @@ class OAuthCallbackResponse(BaseModel):
     refresh_token_present: bool
 
 
+class OperatorLoginRequest(BaseModel):
+    password: str = Field(min_length=1)
+
+
+class OperatorSessionRead(BaseModel):
+    authenticated: bool
+
+
 class OAuthCredentialAckRequest(BaseModel):
     task_id: int
     account_id: int
