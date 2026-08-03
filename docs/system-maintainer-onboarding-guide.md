@@ -927,7 +927,7 @@ npm run build
 
 ### 2026-08-03 — 单一管理员登录会话支持
 
-- 状态：独立审阅通过，待 Git 提交，未发布。
+- 状态：已发布。
 - 需求或问题：控制台没有安全的登录入口，前端无法使用 operator API；后台仅需要一个管理员。
 - 变更内容：在 `backend/app/collectors/security.py` 增加服务端密钥控制的 HMAC 签名会话；在 `backend/app/collectors/router.py` 增加 login/logout/session 端点；控制台增加密码登录页、会话检查和退出登录。既有 `X-ADX-Operator-Token` 方式保留兼容。
 - 修改原因：仅有控制台地址不能构成可靠鉴权，且前端没有注入 Operator Token 的能力，导致管理员无法完成日常操作。
@@ -936,12 +936,12 @@ npm run build
 - 影响范围：控制台和 `/api/v1/operator/*` 鉴权；不改变 Google 拉取、OAuth 凭证、采集运行时、调度、数据库或任务创建。
 - 验证与测试：后端定向 `pytest tests/test_collector_router.py -q` 为 39 passed；后端全量 `pytest tests -q` 为 145 passed；前端全量 `npm test` 为 22 passed；前端 `npm run build` 成功；`git diff --check` 通过。
 - 独立审阅：2026-08-03 独立审阅发现本地跨端口 Cookie 传递 P1 和畸形 Cookie P2，均已按 TDD 修复并复审通过；最终无 P0/P1。
-- Git：分支 `codex/single-admin-login`，提交 `ed12ef5`；尚未合并到 `master`。
-- 发布与回滚：本次未发布。发布前备份生产 `.env` 和运行目录清单，同步已提交的 `master`，验证 `/health`、登录 Cookie 和 operator API。回滚为回到上一 `master` 提交并重启 Web，不触碰 SQLite 或任务数据。
+- Git：功能提交 `ed12ef5`、文档提交 `aaf2a91`，已合并并推送至 `master` 提交 `efd2c7c`。
+- 发布与回滚：2026-08-03 已发布至新服务器控制面。发布前在服务器创建了受限权限备份 `/srv/adx-account-isolated-collector/backups/20260803T032344Z-pre-single-admin-login`，其中含运行时代码、前端静态资源、SQLite 一致性备份、环境文件副本和 unit 清单；同步前的 dry-run 仅包含 7 个后端运行时文件及前端构建产物，未迁移数据库、未改动 `.env`、OAuth/代理或任务数据。发布后 `/health` 为 200，前端资源为 200，登录、会话、受保护 `/api/v1/operator/instances`、登出和登出后拒绝访问依次验证为 200/200/200/204/401，scheduler 保持 inactive。首次静态资源同步因暂存目录 `0700` 权限被 `rsync -a` 保留，Nginx 返回 403；已定位为发布工艺问题，按最小范围将 `frontend/dist` 目录设为 755、文件设为 644 后复验前端 200，并将该权限要求纳入本条记录。回滚为从上述备份还原 7 个后端文件和前端 `dist`，重启 `adx-control-plane` 后复验健康；不触碰 SQLite 或任务数据。
 
 ### 2026-08-03 — 维度报表日期范围错误响应兼容修复
 
-- 状态：独立复审通过，待 Git 提交，未发布。
+- 状态：已发布。
 - 需求或问题：后端全量回归显示维度报表超过 31 天的日期范围会因引用不存在的框架状态常量而抛出 500，未返回预期的 422。
 - 变更内容：`backend/app/collectors/service.py` 的三个日期范围校验分支及 `backend/app/collectors/ingestion_service.py` 的六个批次输入校验分支，统一改用当前依赖提供的 `HTTP_422_UNPROCESSABLE_ENTITY`。
 - 修改原因：保证无效的维度日期参数返回稳定的客户端错误，不将校验异常升级成服务器错误。
@@ -950,5 +950,5 @@ npm run build
 - 影响范围：四个维度查询 API 的无效日期参数及 collector 批次输入错误响应；无数据库、调度、任务或安全影响。
 - 验证与测试：`tests/test_ingestion_service.py::test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups` 为 1 passed；后端全量 `pytest tests -q` 为 145 passed；`rg HTTP_422_UNPROCESSABLE_CONTENT backend/app` 无残留。
 - 独立审阅：2026-08-03 两轮独立复审通过；无 P0/P1，且已确认同类不兼容常量无残留。
-- Git：分支 `codex/single-admin-login`，提交 `ed12ef5`；尚未合并到 `master`。
-- 发布与回滚：本次未发布；回滚为还原该状态常量，不涉及数据恢复。
+- Git：随单管理员登录功能提交 `ed12ef5`，已合并并推送至 `master` 提交 `efd2c7c`。
+- 发布与回滚：2026-08-03 随同一控制面发布；未执行数据库迁移，不影响现有任务或数据。发布后控制面健康检查为 200。若需回滚，只还原这 9 处错误状态常量，不涉及数据恢复。
