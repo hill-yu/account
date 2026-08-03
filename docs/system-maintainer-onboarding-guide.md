@@ -936,7 +936,7 @@ npm run build
 - 影响范围：控制台和 `/api/v1/operator/*` 鉴权；不改变 Google 拉取、OAuth 凭证、采集运行时、调度、数据库或任务创建。
 - 验证与测试：后端定向 `pytest tests/test_collector_router.py -q` 为 39 passed；后端全量 `pytest tests -q` 为 145 passed；前端全量 `npm test` 为 22 passed；前端 `npm run build` 成功；`git diff --check` 通过。
 - 独立审阅：2026-08-03 独立审阅发现本地跨端口 Cookie 传递 P1 和畸形 Cookie P2，均已按 TDD 修复并复审通过；最终无 P0/P1。
-- Git：分支 `codex/single-admin-login`，待本条与代码一并提交。
+- Git：分支 `codex/single-admin-login`，提交 `ed12ef5`；尚未合并到 `master`。
 - 发布与回滚：本次未发布。发布前备份生产 `.env` 和运行目录清单，同步已提交的 `master`，验证 `/health`、登录 Cookie 和 operator API。回滚为回到上一 `master` 提交并重启 Web，不触碰 SQLite 或任务数据。
 
 ### 2026-08-03 — 维度报表日期范围错误响应兼容修复
@@ -950,5 +950,5 @@ npm run build
 - 影响范围：四个维度查询 API 的无效日期参数及 collector 批次输入错误响应；无数据库、调度、任务或安全影响。
 - 验证与测试：`tests/test_ingestion_service.py::test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups` 为 1 passed；后端全量 `pytest tests -q` 为 145 passed；`rg HTTP_422_UNPROCESSABLE_CONTENT backend/app` 无残留。
 - 独立审阅：2026-08-03 两轮独立复审通过；无 P0/P1，且已确认同类不兼容常量无残留。
-- Git：分支 `codex/single-admin-login`，待与登录功能一并提交。
+- Git：分支 `codex/single-admin-login`，提交 `ed12ef5`；尚未合并到 `master`。
 - 发布与回滚：本次未发布；回滚为还原该状态常量，不涉及数据恢复。
