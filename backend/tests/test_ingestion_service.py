@@ -240,12 +240,40 @@ def test_operator_report_endpoints_return_projected_rows(
     assert account_daily.json()["items"][0]["revenue"] == 2.0
 
 
-def test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups(
+def test_hourly_dimension_batch_projects_hourly_facts_without_overwriting_authoritative_daily(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
     test_client, session_factory = client
     task_id, token = _seed_task(test_client)
     headers = {"Authorization": f"Bearer {token}"}
+
+    with session_factory.begin() as session:
+        session.add(
+            SiteDailyReport(
+                account_id=1,
+                report_date=date(2026, 5, 21),
+                url_id="authoritative-url",
+                url="https://example.com/authoritative",
+                responses_served=900,
+                requests=1000,
+                impressions=800,
+                clicks=40,
+                revenue=Decimal("8.000000"),
+                ecpm=Decimal("10.000000"),
+            )
+        )
+        session.add(
+            AccountDailyReport(
+                account_id=1,
+                report_date=date(2026, 5, 21),
+                responses_served=900,
+                requests=1000,
+                impressions=800,
+                clicks=40,
+                revenue=Decimal("8.000000"),
+                ecpm=Decimal("10.000000"),
+            )
+        )
 
     ingest = test_client.post(
         f"/api/v1/collector/tasks/{task_id}/batches",
@@ -316,13 +344,15 @@ def test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups
     assert account_hourly_rows[0].revenue == 2
     assert account_hourly_rows[0].report_time_utc == datetime(2026, 5, 21, 16, 0)
 
-    assert len(site_daily_rows) == 2
+    assert len(site_daily_rows) == 1
+    assert site_daily_rows[0].url_id == "authoritative-url"
+    assert site_daily_rows[0].requests == 1000
     assert len(account_daily_rows) == 1
-    assert account_daily_rows[0].responses_served == 140
-    assert account_daily_rows[0].requests == 190
-    assert account_daily_rows[0].impressions == 100
-    assert account_daily_rows[0].clicks == 5
-    assert account_daily_rows[0].revenue == 2
+    assert account_daily_rows[0].responses_served == 900
+    assert account_daily_rows[0].requests == 1000
+    assert account_daily_rows[0].impressions == 800
+    assert account_daily_rows[0].clicks == 40
+    assert account_daily_rows[0].revenue == 8
 
     site_daily = test_client.get("/api/v1/operator/reports/site-daily", params={"account_id": 1, "report_date": "2026-05-21"})
     assert site_daily.status_code == 200
@@ -335,13 +365,13 @@ def test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups
         "max_hour": 9,
         "is_complete_day": False,
         "latest_task_id": 1,
-        "daily_revenue": 2.0,
+        "daily_revenue": 8.0,
         "hourly_revenue": 2.0,
-        "revenue_diff_percent": 0.0,
-        "daily_impressions": 100,
+        "revenue_diff_percent": 75.0,
+        "daily_impressions": 800,
         "hourly_impressions": 100,
-        "impressions_diff_percent": 0.0,
-        "is_value_match": True,
+        "impressions_diff_percent": 87.5,
+        "is_value_match": False,
     }
 
     account_daily = test_client.get(

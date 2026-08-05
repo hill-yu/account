@@ -164,7 +164,6 @@ def _project_payload_if_supported(
             for row in rows
         ]
         if reset_existing:
-            _reset_daily_projection(db, account_id=task.account_id, report_date=task.report_date)
             _reset_hourly_projection(db, account_id=task.account_id, report_date=task.report_date)
 
         for row in normalized_rows:
@@ -204,8 +203,6 @@ def _project_payload_if_supported(
 
         db.flush()
         _rebuild_account_hourly_reports(db, account_id=task.account_id, report_date=task.report_date)
-        _rebuild_site_daily_reports_from_hourly(db, account_id=task.account_id, report_date=task.report_date)
-        _rebuild_account_daily_report(db, account_id=task.account_id, report_date=task.report_date)
         return
 
     if schema_version == "admanager_daily_dimension_v1":
@@ -464,55 +461,6 @@ def _rebuild_account_hourly_reports(db: Session, *, account_id: int, report_date
                 ),
             )
         )
-
-
-def _rebuild_site_daily_reports_from_hourly(db: Session, *, account_id: int, report_date: date) -> None:
-    _reset_daily_projection(db, account_id=account_id, report_date=report_date)
-
-    site_rows = list(
-        db.scalars(
-            select(SiteHourlyReport).where(
-                SiteHourlyReport.account_id == account_id,
-                SiteHourlyReport.report_date == report_date,
-            )
-        )
-    )
-    grouped: dict[str, dict[str, Any]] = {}
-    for row in site_rows:
-        if row.url_id not in grouped:
-            grouped[row.url_id] = {
-                "url": row.url,
-                "responses_served": 0,
-                "requests": 0,
-                "impressions": 0,
-                "clicks": 0,
-                "revenue": Decimal("0"),
-            }
-        grouped_row = grouped[row.url_id]
-        grouped_row["responses_served"] += row.responses_served
-        grouped_row["requests"] += row.requests
-        grouped_row["impressions"] += row.impressions
-        grouped_row["clicks"] += row.clicks
-        grouped_row["revenue"] += row.revenue
-
-    for url_id, grouped_row in grouped.items():
-        impressions = grouped_row["impressions"]
-        revenue = grouped_row["revenue"].quantize(Decimal("0.000001"))
-        db.add(
-            SiteDailyReport(
-                account_id=account_id,
-                report_date=report_date,
-                url_id=url_id,
-                url=grouped_row["url"],
-                responses_served=grouped_row["responses_served"],
-                requests=grouped_row["requests"],
-                impressions=impressions,
-                clicks=grouped_row["clicks"],
-                revenue=revenue,
-                ecpm=_calculate_ecpm(revenue=revenue, impressions=impressions),
-            )
-        )
-    db.flush()
 
 
 def _rebuild_account_daily_report(db: Session, *, account_id: int, report_date: date) -> None:

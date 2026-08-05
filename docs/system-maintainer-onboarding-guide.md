@@ -980,3 +980,17 @@ npm run build
 - 独立审阅：首轮独立审阅发现 DST P1，已按 TDD 修复；复审确认以 UTC 增加五个实际经过小时，春/秋 DST 边界可捕获原错误，且 scheduler 启停、迁移、错误处理和安全边界均未变更。复审无 P0/P1 阻塞；同时已采纳 P2 注释修正。
 - Git：分支 `codex/daily-maturity-window`，运行时代码提交 `4175bdd`，审阅与发布台账提交 `d25cdeb`；不包含任何密码、Token、OAuth 或代理凭据。
 - 发布与回滚：2026-08-05 已发布到生产服务器。发布前创建受限权限备份 `/srv/adx-account-isolated-collector/backups/20260805T123426Z-pre-daily-five-hour-window`，其中含原 `service.py`、运行环境文件副本、systemd unit 文本和 SQLite 一致性备份；仅同步已提交的 `service.py`，未修改数据库业务数据、OAuth、代理或 API 契约。发布后控制面 `/health` 返回 `{"status":"ok"}`，服务为 `active`，本地与生产 `service.py` SHA-256 一致，运行时确认等待量为 `5.0` 小时且洛杉矶春季 DST 边界为 `2026-03-08T13:00:00+00:00`。发布前发现 scheduler 意外处于 `active`，为阻止旧两小时规则继续创建任务已先停止；发布后保持 `inactive`。其 systemd 启动策略仍为 `enabled`，服务器重启时会自动启动，未在本次未经额外授权的范围内修改。回滚为恢复上述备份中的 `service.py` 并重启 `adx-control-plane`；不触碰数据库业务数据，也不启动 scheduler。
+
+### 2026-08-05 — 禁止小时批次覆盖权威日报并恢复 8 月 4 日灰度日报
+
+- 状态：生产日报数据已恢复；代码修复独立审阅通过，待 Git 提交与生产发布。
+- 需求或问题：用户查询 `2026-08-04` 权威日报时，发现当前值与上午已确认的权威日报值不一致。生产证据表明，后续 `report_fetch_hourly` 批次完成时间与 `account_daily_reports.updated_at` 一致，小时入库覆盖了已存在的权威日报。
+- 根因与引入阶段：提交 `3b82481`（2026-07-14，“hourly merge finalization + authoritative daily cutover”）在 `admanager_hourly_dimension_v1` 分支中加入 `_reset_daily_projection`、`_rebuild_site_daily_reports_from_hourly` 和 `_rebuild_account_daily_report`，导致小时批次清空并重建 `site_daily_reports`/`account_daily_reports`。提交说明声称停止小时覆盖，但实际差异加入了覆盖调用。`origin/dev` 的 WIP 提交 `54711dc` 已删除这些调用，但从未合并到生产 `master`。
+- 生产数据恢复：在 scheduler 保持 `inactive` 的前提下，通过控制面正常任务接口为 11 个当前灰度节点创建 `2026-08-04` 日报任务 `22326` 至 `22336`，使用各节点既有 OAuth 与代理串行执行；11 个任务全部 `succeeded`。恢复后的 Requests 包括 `coeurdazur.com=594570`、`stones=12304`，与上午权威日报记录一致。
+- 生产写操作备份：执行刷新前创建受限目录 `/srv/adx-account-isolated-collector/backups/20260805T131148Z-pre-20260804-authoritative-daily-refresh`，保存受影响日期四张日报表及灰度节点清单的定向 JSON 快照；未复制 Token、OAuth 或代理凭据。此前五小时窗口发布记录误将根目录 0 字节 `control_plane.db` 当作实际数据库备份，真实数据库为 `backend/control_plane.db`；该错误备份不可用于数据回滚，生产数据本身未受此次路径判断错误影响。
+- 代码整改方案：小时批次只重置和写入 `site_hourly_reports`/`account_hourly_reports`，不再调用任何日报清空或日报重建函数；删除仅供“从小时重建日报”使用的私有函数。`admanager_site_core_v1` 日报批次继续独占写入现有聚合日报表，日报维度表逻辑不变。
+- 预期结果与影响范围：任何小时实时拉取、小时补齐或小时维度批次都不能改变既有权威日报；小时表、小时维度 API、覆盖率对比仍正常更新。无数据库迁移、API 字段、OAuth、代理或 scheduler 启停变更。
+- TDD 与验证：先将现有小时入库测试改为预置不同数值的权威日报，再入库小时批次；修复前红灯显示权威站点日报被从 1 条替换为 2 条小时汇总，修复后测试通过。`pytest tests/test_ingestion_service.py -q` 为 6 passed，完整 `pytest tests -q` 为 149 passed；`git diff --check` 通过。代码扫描确认小时分支不再引用日报重建函数，唯一 `_reset_daily_projection` 调用只保留在日报 schema 分支。
+- 独立审阅：2026-08-05 独立审阅通过，无 P0/P1；确认小时分支、日报分支、维度表、迁移、API、OAuth、代理、scheduler、错误处理和安全边界均符合本次范围。P2 后续项：现有逻辑在首个小时分页 `rows=[]`、后续分页非空时可能不重置旧小时事实；该问题不写日报、不阻塞本次紧急修复，须另立 TDD 任务处理。
+- Git：分支 `codex/protect-authoritative-daily-from-hourly`，待提交。
+- 发布与回滚：发布前备份生产 `ingestion_service.py` 并核对运行文件基线；仅同步经审阅、已提交的该文件，重启控制面，保持 scheduler `inactive`。发布后通过隔离测试数据或本地回归证明小时批次不修改权威日报。回滚为恢复原文件并重启控制面，但原逻辑存在已确认的数据覆盖缺陷，仅在新版本无法启动时用于短时恢复 API，且 scheduler 与小时任务必须保持停止。
