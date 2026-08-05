@@ -978,5 +978,5 @@ npm run build
 - 影响范围：影响调用 `is_authoritative_daily_ready` 的自动日报调度与 OAuth 恢复缺口判断；不影响小时任务、既有数据、数据库结构、认证、代理、对外 API 字段或当前 scheduler 的 inactive 状态。
 - 验证与测试：TDD 红灯已确认原两小时时间分别产生 UTC 18:00（上海）和 UTC 09:00（洛杉矶），与五小时要求不符；独立审阅发现 DST 边界缺陷后，新增洛杉矶 2026 年春季/秋季切换日红灯用例（原实现分别错误产生 UTC 12:00/13:00），修复后为 UTC 13:00/12:00。隔离工作区定向 `pytest tests/test_fetch_scheduler.py -q` 为 18 passed；完整 `pytest tests -q` 为 149 passed，只有既有依赖弃用警告；`git diff --check` 通过。未使用真实账号、代理或生产拉取。
 - 独立审阅：首轮独立审阅发现 DST P1，已按 TDD 修复；复审确认以 UTC 增加五个实际经过小时，春/秋 DST 边界可捕获原错误，且 scheduler 启停、迁移、错误处理和安全边界均未变更。复审无 P0/P1 阻塞；同时已采纳 P2 注释修正。
-- Git：分支 `codex/daily-maturity-window`，待提交；不包含任何密码、Token、OAuth 或代理凭据。
+- Git：分支 `codex/daily-maturity-window`，提交 `4175bdd`（本条随后随同提交号修订）；不包含任何密码、Token、OAuth 或代理凭据。
 - 发布与回滚：用户已授权生产发布，但发布前必须备份运行时受控文件和 SQLite 一致性副本、确认生产 scheduler 仍为 inactive，再以已提交版本进行最小同步和服务健康检查。回滚为恢复本次变更前的 `service.py` 并重启 `adx-control-plane`；不触碰数据库业务数据，也不启动 scheduler。
