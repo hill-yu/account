@@ -36,6 +36,14 @@ HOURLY_REQUIRED_CSV_COLUMNS = (
     "Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM",
 )
 
+DAILY_DIMENSION_REQUIRED_CSV_COLUMNS = (
+    "Dimension.SITE_NAME",
+    "Dimension.COUNTRY_CODE",
+    "Dimension.AD_UNIT_ID",
+    "Dimension.AD_UNIT_NAME",
+    *REQUIRED_CSV_COLUMNS[1:],
+)
+
 MISSING_SITE_NAME_PLACEHOLDER = "__missing_site_name__"
 
 
@@ -82,6 +90,24 @@ class HourlyDimensionSoapReportDefinition:
     time_zone_type: str = "PACIFIC"
     source_timezone: str = "America/Los_Angeles"
     schema_version: str = "admanager_hourly_dimension_v1"
+
+    def build_report_query(self, *, task_id: int, report_date: date) -> dict[str, object]:
+        return {
+            "dimensions": list(self.dimensions),
+            "columns": list(self.columns),
+            "dateRangeType": "CUSTOM_DATE",
+            "startDate": _google_date(report_date),
+            "endDate": _google_date(report_date),
+            "timeZoneType": self.time_zone_type,
+        }
+
+
+@dataclass(frozen=True)
+class DailyDimensionSoapReportDefinition:
+    dimensions: tuple[str, ...] = ("DATE", "SITE_NAME", "COUNTRY_CODE", "AD_UNIT_ID")
+    columns: tuple[str, ...] = SoapReportDefinition.columns
+    time_zone_type: str = "PUBLISHER"
+    schema_version: str = "admanager_daily_dimension_v1"
 
     def build_report_query(self, *, task_id: int, report_date: date) -> dict[str, object]:
         return {
@@ -197,6 +223,37 @@ def parse_hourly_report_csv(
                 ),
             }
         )
+    return rows
+
+
+def parse_daily_dimension_report_csv(raw_csv: str, *, report_date: date) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    reader = csv.DictReader(io.StringIO(raw_csv))
+    _validate_required_columns(reader.fieldnames, required_columns=DAILY_DIMENSION_REQUIRED_CSV_COLUMNS)
+    date_column = _resolve_daily_date_column(reader.fieldnames)
+    for row in reader:
+        if not any((value or "").strip() for value in row.values()):
+            continue
+        if (row.get(date_column) or "").strip() != report_date.isoformat():
+            raise ValueError("Unexpected Ad Manager daily dimension report row date")
+        site_name = _site_name_or_placeholder(row)
+        country_code = (row.get("Dimension.COUNTRY_CODE") or "UNKNOWN").strip() or "UNKNOWN"
+        ad_slot_id = (row.get("Dimension.AD_UNIT_ID") or "UNKNOWN").strip() or "UNKNOWN"
+        rows.append({
+            "report_date": report_date.isoformat(),
+            "url_id": site_name,
+            "url": site_name,
+            "ad_country_code": country_code,
+            "ad_country_name": country_code,
+            "ad_slot_id": ad_slot_id,
+            "ad_slot_name": ((row.get("Dimension.AD_UNIT_NAME") or ad_slot_id).strip() or ad_slot_id),
+            "responses_served": _parse_int_or_zero_when_missing(row.get("Column.AD_EXCHANGE_RESPONSES_SERVED"), field_name="Column.AD_EXCHANGE_RESPONSES_SERVED"),
+            "requests": _parse_int_or_zero_when_missing(row.get("Column.AD_EXCHANGE_TOTAL_REQUESTS"), field_name="Column.AD_EXCHANGE_TOTAL_REQUESTS"),
+            "impressions": _parse_int_or_zero_when_missing(row.get("Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS"), field_name="Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS"),
+            "clicks": _parse_int_or_zero_when_missing(row.get("Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS"), field_name="Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS"),
+            "revenue": _parse_micros_or_zero_when_missing(row.get("Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE"), field_name="Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE"),
+            "ecpm": _parse_micros_or_zero_when_missing(row.get("Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM"), field_name="Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM"),
+        })
     return rows
 
 
@@ -316,6 +373,7 @@ class AdManagerSoapClient:
         self._proxy_config = proxy_config
         self._report_definition = SoapReportDefinition()
         self._hourly_report_definition = HourlyDimensionSoapReportDefinition()
+        self._daily_dimension_report_definition = DailyDimensionSoapReportDefinition()
         self._downloader_factory = downloader_factory
         self._client_factory = client_factory
 
@@ -347,6 +405,14 @@ class AdManagerSoapClient:
             ),
         )
 
+    def fetch_daily_dimension_rows(self, *, task_id: int, report_date: date) -> list[dict[str, object]]:
+        return self._fetch_rows_with_definition(
+            task_id=task_id,
+            report_date=report_date,
+            report_definition=self._daily_dimension_report_definition,
+            parser=lambda raw_csv: parse_daily_dimension_report_csv(raw_csv, report_date=report_date),
+        )
+
     def fetch_current_network(self) -> dict[str, str]:
         network_service = self._build_ad_manager_client().GetService(
             "NetworkService",
@@ -369,7 +435,7 @@ class AdManagerSoapClient:
         *,
         task_id: int,
         report_date: date,
-        report_definition: SoapReportDefinition | HourlyDimensionSoapReportDefinition,
+        report_definition: SoapReportDefinition | HourlyDimensionSoapReportDefinition | DailyDimensionSoapReportDefinition,
         parser: Callable[[str], list[dict[str, object]]],
     ) -> list[dict[str, object]]:
         downloader = self._build_downloader()

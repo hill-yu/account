@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,7 @@ from app.models.collector_sync_task import CollectorSyncTask
 from app.models.site_daily_report import SiteDailyReport
 from app.models.site_daily_dimension_report import SiteDailyDimensionReport
 from app.models.site_hourly_report import SiteHourlyReport
+from app.models.authoritative_daily_version_summary import AuthoritativeDailyVersionSummary
 
 
 def ingest_batch(
@@ -43,6 +44,18 @@ def ingest_batch(
         task=task,
         supplied_version=payload.credential_version,
     )
+    if payload.schema_version == "admanager_authoritative_daily_v1" and task.authoritative_slot is not None:
+        published_slot = db.scalar(
+            select(func.max(AuthoritativeDailyVersionSummary.slot)).where(
+                AuthoritativeDailyVersionSummary.account_id == task.account_id,
+                AuthoritativeDailyVersionSummary.report_date == task.report_date,
+            )
+        )
+        if published_slot is not None and published_slot > task.authoritative_slot:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A later authoritative daily slot has already been published",
+            )
 
     payload_json = json.dumps(payload.rows, separators=(",", ":"), sort_keys=True) if payload.rows is not None else None
     existing = db.scalar(
@@ -89,6 +102,26 @@ def ingest_batch(
             rows=payload.rows,
             reset_existing=is_first_batch_for_schema,
         )
+        if payload.schema_version == "admanager_authoritative_daily_v1":
+            account_daily = db.scalar(
+                select(AccountDailyReport).where(
+                    AccountDailyReport.account_id == task.account_id,
+                    AccountDailyReport.report_date == task.report_date,
+                )
+            )
+            db.add(AuthoritativeDailyVersionSummary(
+                task_id=task.id,
+                account_id=task.account_id,
+                report_date=task.report_date,
+                slot=task.authoritative_slot,
+                responses_served=account_daily.responses_served if account_daily else 0,
+                requests=account_daily.requests if account_daily else 0,
+                impressions=account_daily.impressions if account_daily else 0,
+                clicks=account_daily.clicks if account_daily else 0,
+                revenue=account_daily.revenue if account_daily else Decimal("0"),
+                row_count=payload.row_count,
+                payload_hash=payload.payload_hash,
+            ))
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -125,6 +158,35 @@ def _project_payload_if_supported(
     reset_existing: bool,
 ) -> None:
     if not rows:
+        return
+    if schema_version == "admanager_authoritative_daily_v1":
+        if task.task_type != "report_fetch" or len(rows) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid authoritative daily snapshot",
+            )
+        envelope = rows[0]
+        core_rows = envelope.get("core_rows")
+        dimension_rows = envelope.get("dimension_rows")
+        if not isinstance(core_rows, list) or not isinstance(dimension_rows, list):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Authoritative daily snapshot requires core_rows and dimension_rows",
+            )
+        _project_payload_if_supported(
+            db,
+            task=task,
+            schema_version="admanager_site_core_v1",
+            rows=core_rows,
+            reset_existing=True,
+        )
+        _project_payload_if_supported(
+            db,
+            task=task,
+            schema_version="admanager_daily_dimension_v1",
+            rows=dimension_rows,
+            reset_existing=True,
+        )
         return
     if schema_version == "admanager_site_core_v1":
         normalized_rows = [_normalize_admanager_site_row(row, task.report_date) for row in rows]
@@ -164,7 +226,6 @@ def _project_payload_if_supported(
             for row in rows
         ]
         if reset_existing:
-            _reset_daily_projection(db, account_id=task.account_id, report_date=task.report_date)
             _reset_hourly_projection(db, account_id=task.account_id, report_date=task.report_date)
 
         for row in normalized_rows:
@@ -204,8 +265,6 @@ def _project_payload_if_supported(
 
         db.flush()
         _rebuild_account_hourly_reports(db, account_id=task.account_id, report_date=task.report_date)
-        _rebuild_site_daily_reports_from_hourly(db, account_id=task.account_id, report_date=task.report_date)
-        _rebuild_account_daily_report(db, account_id=task.account_id, report_date=task.report_date)
         return
 
     if schema_version == "admanager_daily_dimension_v1":

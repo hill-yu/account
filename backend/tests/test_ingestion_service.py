@@ -20,6 +20,8 @@ from app.models.site_daily_report import SiteDailyReport
 from app.models.site_hourly_report import SiteHourlyReport
 from app.models.collector_ingestion_batch import CollectorIngestionBatch
 from app.models.site_daily_dimension_report import SiteDailyDimensionReport
+from app.models.authoritative_daily_version_summary import AuthoritativeDailyVersionSummary
+from app.collectors.service import _beijing_date_range_utc
 
 
 @pytest.fixture()
@@ -240,12 +242,41 @@ def test_operator_report_endpoints_return_projected_rows(
     assert account_daily.json()["items"][0]["revenue"] == 2.0
 
 
-def test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups(
+def test_hourly_dimension_batch_projects_hourly_facts_without_overwriting_authoritative_daily(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
     test_client, session_factory = client
     task_id, token = _seed_task(test_client)
     headers = {"Authorization": f"Bearer {token}"}
+
+    with session_factory() as session:
+        session.add(
+            SiteDailyReport(
+                account_id=1,
+                report_date=date(2026, 5, 21),
+                url_id="authoritative-url",
+                url="https://authoritative.example.com",
+                responses_served=999,
+                requests=1000,
+                impressions=900,
+                clicks=90,
+                revenue=Decimal("9.000000"),
+                ecpm=Decimal("10.000000"),
+            )
+        )
+        session.add(
+            AccountDailyReport(
+                account_id=1,
+                report_date=date(2026, 5, 21),
+                responses_served=999,
+                requests=1000,
+                impressions=900,
+                clicks=90,
+                revenue=Decimal("9.000000"),
+                ecpm=Decimal("10.000000"),
+            )
+        )
+        session.commit()
 
     ingest = test_client.post(
         f"/api/v1/collector/tasks/{task_id}/batches",
@@ -316,13 +347,14 @@ def test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups
     assert account_hourly_rows[0].revenue == 2
     assert account_hourly_rows[0].report_time_utc == datetime(2026, 5, 21, 16, 0)
 
-    assert len(site_daily_rows) == 2
+    assert len(site_daily_rows) == 1
+    assert site_daily_rows[0].url_id == "authoritative-url"
     assert len(account_daily_rows) == 1
-    assert account_daily_rows[0].responses_served == 140
-    assert account_daily_rows[0].requests == 190
-    assert account_daily_rows[0].impressions == 100
-    assert account_daily_rows[0].clicks == 5
-    assert account_daily_rows[0].revenue == 2
+    assert account_daily_rows[0].responses_served == 999
+    assert account_daily_rows[0].requests == 1000
+    assert account_daily_rows[0].impressions == 900
+    assert account_daily_rows[0].clicks == 90
+    assert account_daily_rows[0].revenue == 9
 
     site_daily = test_client.get("/api/v1/operator/reports/site-daily", params={"account_id": 1, "report_date": "2026-05-21"})
     assert site_daily.status_code == 200
@@ -335,13 +367,13 @@ def test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups
         "max_hour": 9,
         "is_complete_day": False,
         "latest_task_id": 1,
-        "daily_revenue": 2.0,
+        "daily_revenue": 9.0,
         "hourly_revenue": 2.0,
-        "revenue_diff_percent": 0.0,
-        "daily_impressions": 100,
+        "revenue_diff_percent": 77.78,
+        "daily_impressions": 900,
         "hourly_impressions": 100,
-        "impressions_diff_percent": 0.0,
-        "is_value_match": True,
+        "impressions_diff_percent": 88.89,
+        "is_value_match": False,
     }
 
     account_daily = test_client.get(
@@ -354,7 +386,7 @@ def test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups
 
     dimensions = test_client.get(
         "/api/v1/operator/mid-platform/reports/site-hourly-dimensions",
-        params={"account_id": 1, "report_date": "2026-05-21", "site_name": "https://example.com/a", "page": 1, "page_size": 1},
+        params={"account_id": 1, "report_date": "2026-05-22", "site_name": "https://example.com/a", "page": 1, "page_size": 1},
     )
     assert dimensions.status_code == 200
     dimension_body = dimensions.json()
@@ -363,23 +395,24 @@ def test_hourly_dimension_batch_projects_hourly_facts_and_rebuilds_daily_rollups
     assert dimension_body["page"] == 1
     assert dimension_body["page_size"] == 1
     assert dimension_body["total"] == 1
-    assert dimension_body["items"][0]["hour"] == 9
+    assert dimension_body["items"][0]["report_date"] == "2026-05-22"
+    assert dimension_body["items"][0]["hour"] == 0
     assert dimension_body["items"][0]["report_time_utc"] == "2026-05-21T16:00:00"
     assert dimension_body["items"][0]["source_timezone"] == "America/Los_Angeles"
 
     date_range = test_client.get(
         "/api/v1/operator/mid-platform/reports/site-hourly-dimensions",
-        params={"account_id": 1, "start_date": "2026-05-21", "end_date": "2026-05-21"},
+        params={"account_id": 1, "start_date": "2026-05-22", "end_date": "2026-05-22"},
     )
     assert date_range.status_code == 200
-    assert date_range.json()["report_date"] == "2026-05-21"
-    assert date_range.json()["start_date"] == "2026-05-21"
-    assert date_range.json()["end_date"] == "2026-05-21"
+    assert date_range.json()["report_date"] == "2026-05-22"
+    assert date_range.json()["start_date"] == "2026-05-22"
+    assert date_range.json()["end_date"] == "2026-05-22"
     assert date_range.json()["total"] == 2
 
     second_page = test_client.get(
         "/api/v1/operator/mid-platform/reports/site-hourly-dimensions",
-        params={"account_id": 1, "report_date": "2026-05-21", "page": 2, "page_size": 1},
+        params={"account_id": 1, "report_date": "2026-05-22", "page": 2, "page_size": 1},
     )
     assert second_page.status_code == 200
     assert second_page.json()["total"] == 2
@@ -509,3 +542,84 @@ def test_daily_dimension_snapshot_replaces_stale_rows_after_core_batch(
         rows = session.scalars(select(SiteDailyDimensionReport).order_by(SiteDailyDimensionReport.url_id)).all()
 
     assert [row.url_id for row in rows] == ["url-1"]
+def test_authoritative_daily_batch_replaces_core_and_dimension_in_one_request(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    task_id, token = _seed_task(test_client)
+
+    response = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "batch_key": "authoritative-snapshot",
+            "row_count": 2,
+            "payload_hash": "authoritative-hash",
+            "schema_version": "admanager_authoritative_daily_v1",
+            "rows": [{
+                "core_rows": [{
+                    "report_date": "2026-05-21", "url_id": "site-1", "url": "site-1",
+                    "responses_served": 50, "requests": 60, "impressions": 40, "clicks": 2,
+                    "revenue": "1.000000", "ecpm": "25.000000",
+                }],
+                "dimension_rows": [{
+                    "report_date": "2026-05-21", "url_id": "site-1", "url": "site-1",
+                    "ad_country_code": "US", "ad_country_name": "US", "ad_slot_id": "slot-1",
+                    "ad_slot_name": "Top", "responses_served": 50, "requests": 60,
+                    "impressions": 40, "clicks": 2, "revenue": "1.000000", "ecpm": "25.000000",
+                }],
+            }],
+        },
+    )
+
+    assert response.status_code == 201
+    with session_factory() as session:
+        assert session.scalar(select(AccountDailyReport)).requests == 60
+        assert session.scalar(select(SiteDailyReport)).url_id == "site-1"
+        assert session.scalar(select(SiteDailyDimensionReport)).ad_slot_id == "slot-1"
+        summary = session.scalar(select(AuthoritativeDailyVersionSummary))
+        assert summary.task_id == task_id
+        assert summary.requests == 60
+        assert summary.row_count == 2
+        assert summary.payload_hash == "authoritative-hash"
+
+
+def test_earlier_authoritative_slot_cannot_overwrite_later_published_slot(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    early_task_id, token = _seed_task(test_client)
+    with session_factory() as session:
+        session.get(_models.CollectorSyncTask, early_task_id).authoritative_slot = 5
+        later_task = _models.CollectorSyncTask(
+            account_id=1, collector_instance_id=1, task_type="report_fetch",
+            report_date=date(2026, 5, 21), status="succeeded", authoritative_slot=7,
+            external_request_id="later-slot-7",
+        )
+        session.add(later_task)
+        session.flush()
+        session.add(AuthoritativeDailyVersionSummary(
+            task_id=later_task.id, account_id=1, report_date=date(2026, 5, 21), slot=7,
+            responses_served=70, requests=70, impressions=70, clicks=7,
+            revenue=Decimal("7"), row_count=1, payload_hash="later",
+        ))
+        session.commit()
+
+    response = test_client.post(
+        f"/api/v1/collector/tasks/{early_task_id}/batches",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "batch_key": "late-slot-5", "row_count": 0, "payload_hash": "late",
+            "schema_version": "admanager_authoritative_daily_v1",
+            "rows": [{"core_rows": [], "dimension_rows": []}],
+        },
+    )
+
+    assert response.status_code == 409
+
+
+def test_beijing_date_range_spans_previous_and_current_utc_dates() -> None:
+    start_utc, end_utc = _beijing_date_range_utc(date(2026, 8, 5), date(2026, 8, 5))
+
+    assert start_utc == datetime(2026, 8, 4, 16, 0)
+    assert end_utc == datetime(2026, 8, 5, 16, 0)

@@ -9,8 +9,10 @@ import pytest
 
 from app.admanager_soap import (
     AdManagerSoapClient,
+    DailyDimensionSoapReportDefinition,
     HourlyDimensionSoapReportDefinition,
     SoapReportDefinition,
+    parse_daily_dimension_report_csv,
     parse_hourly_report_csv,
     parse_report_csv,
 )
@@ -59,6 +61,25 @@ def test_hourly_soap_report_definition_builds_expected_query() -> None:
         "endDate": {"year": 2026, "month": 6, "day": 3},
         "timeZoneType": "PACIFIC",
     }
+
+
+def test_daily_dimension_report_requires_country_and_ad_unit() -> None:
+    definition = DailyDimensionSoapReportDefinition()
+
+    query = definition.build_report_query(task_id=7, report_date=date(2026, 6, 3))
+
+    assert query["dimensions"] == ["DATE", "SITE_NAME", "COUNTRY_CODE", "AD_UNIT_ID"]
+    assert query["timeZoneType"] == "PUBLISHER"
+
+    raw_csv = """Dimension.DATE,Dimension.SITE_NAME,Dimension.COUNTRY_CODE,Dimension.AD_UNIT_ID,Dimension.AD_UNIT_NAME,Column.AD_EXCHANGE_RESPONSES_SERVED,Column.AD_EXCHANGE_TOTAL_REQUESTS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_IMPRESSIONS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_CLICKS,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_REVENUE,Column.AD_EXCHANGE_LINE_ITEM_LEVEL_AVERAGE_ECPM
+2026-06-03,example.com,US,slot-1,Top Banner,10,12,8,1,1000000,125000000
+"""
+
+    rows = parse_daily_dimension_report_csv(raw_csv, report_date=date(2026, 6, 3))
+
+    assert rows[0]["ad_country_code"] == "US"
+    assert rows[0]["ad_slot_id"] == "slot-1"
+    assert rows[0]["ad_slot_name"] == "Top Banner"
 
 
 def test_parse_report_csv_normalizes_adx_url_rows() -> None:

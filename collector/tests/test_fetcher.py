@@ -11,20 +11,26 @@ from app.proxy import ProxyConfig
 class FakeSoapService:
     def __init__(self) -> None:
         self.daily_calls: list[tuple[date, int]] = []
+        self.daily_dimension_calls: list[tuple[date, int]] = []
         self.hourly_calls: list[tuple[date, int]] = []
 
     def fetch_site_daily_report(self, *, report_date: date, task_id: int = 1):
         self.daily_calls.append((report_date, task_id))
         return ["daily-row"]
 
-    def build_fetch_batch(self, *, rows, batch_key: str = "page-1"):
-        assert rows == ["daily-row"]
+    def fetch_site_daily_dimension_report(self, *, report_date: date, task_id: int = 1):
+        self.daily_dimension_calls.append((report_date, task_id))
+        return ["daily-dimension-row"]
+
+    def build_authoritative_daily_fetch_batch(self, *, core_rows, dimension_rows, batch_key: str = "snapshot"):
+        assert core_rows == ["daily-row"]
+        assert dimension_rows == ["daily-dimension-row"]
         return FetchBatch(
             batch_key=batch_key,
-            row_count=1,
+            row_count=2,
             payload_hash="daily-hash",
-            schema_version="admanager_site_core_v1",
-            rows=[{"report_date": "2026-06-25"}],
+            schema_version="admanager_authoritative_daily_v1",
+            rows=[{"core_rows": [{"report_date": "2026-06-25"}], "dimension_rows": [{"report_date": "2026-06-25"}]}],
         )
 
     def fetch_site_hourly_report(self, *, report_date: date, task_id: int = 1):
@@ -92,8 +98,9 @@ def test_admanager_soap_fetcher_uses_daily_batch_for_report_fetch() -> None:
     batches = list(fetcher.fetch(task))
 
     assert len(batches) == 1
-    assert batches[0].schema_version == "admanager_site_core_v1"
+    assert batches[0].schema_version == "admanager_authoritative_daily_v1"
     assert service.daily_calls == [(date(2026, 6, 25), 21)]
+    assert service.daily_dimension_calls == [(date(2026, 6, 25), 21)]
     assert service.hourly_calls == []
 
 
@@ -120,6 +127,7 @@ def test_admanager_soap_fetcher_uses_hourly_batch_for_report_fetch_hourly() -> N
     assert len(batches) == 1
     assert batches[0].schema_version == "admanager_hourly_dimension_v1"
     assert service.daily_calls == []
+    assert service.daily_dimension_calls == []
     assert service.hourly_calls == [(date(2026, 6, 25), 22)]
 
 

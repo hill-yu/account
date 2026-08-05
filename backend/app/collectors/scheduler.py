@@ -181,37 +181,25 @@ class FetchScheduler:
 
             timezone_name = account.timezone or service.DEFAULT_REPORT_TIMEZONE
             local_now = now.astimezone(ZoneInfo(timezone_name))
-            anchor_date = local_now.date()
+            slot = local_now.hour if local_now.hour in {5, 6, 7} else None
+            if slot is None:
+                continue
             has_pending_task = False
-
-            for offset in range(3, 0, -1):
-                report_date = anchor_date - timedelta(days=offset)
-                if not service.is_authoritative_daily_ready(
-                    report_date=report_date,
-                    timezone_name=timezone_name,
-                    now=now,
-                ):
-                    continue
-                if service.has_successful_authoritative_daily_fetch(
-                    db,
-                    account_id=account.id,
-                    report_date=report_date,
-                ):
-                    continue
-
-                task, created = service._get_or_create_daily_sync_task(
-                    db,
-                    account_id=account.id,
-                    collector_instance_id=instance.id,
-                    report_date=report_date,
-                    external_request_id=(
-                        f"auto-daily-{instance.report_account_key}-{report_date.isoformat()}-{token_urlsafe(6)}"
-                    ),
-                )
-                if task.status == "pending":
-                    has_pending_task = True
-                if created:
-                    processed += 1
+            report_date = local_now.date() - timedelta(days=1)
+            task, created = service._get_or_create_daily_sync_task(
+                db,
+                account_id=account.id,
+                collector_instance_id=instance.id,
+                report_date=report_date,
+                authoritative_slot=slot,
+                external_request_id=(
+                    f"auto-daily-{instance.report_account_key}-{report_date.isoformat()}-{slot}-{token_urlsafe(6)}"
+                ),
+            )
+            if task.status == "pending":
+                has_pending_task = True
+            if created:
+                processed += 1
 
             # The collector runtime handles one task and exits. Relaunch it on
             # later scheduler passes while this instance still has queued work.

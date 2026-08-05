@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "oauth_credentials",
     "collector_account_policies",
     "oauth_events",
+    "authoritative_daily_version_summaries",
 }
 
 

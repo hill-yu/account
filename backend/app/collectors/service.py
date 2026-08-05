@@ -1174,13 +1174,19 @@ def _get_or_create_daily_sync_task(
     account_id: int,
     collector_instance_id: int,
     report_date: date,
-    external_request_id: str | None,
+    authoritative_slot: int | None = None,
+    external_request_id: str | None = None,
 ) -> tuple[CollectorSyncTask, bool]:
     """获取或创建日报同步任务（幂等操作）。
 
     与 _get_or_create_hourly_sync_task 同理，只是任务类型为 report_fetch。
     """
-    existing = _find_active_daily_sync_task(db, account_id=account_id, report_date=report_date)
+    existing = db.scalar(select(CollectorSyncTask).where(
+        CollectorSyncTask.account_id == account_id,
+        CollectorSyncTask.task_type == "report_fetch",
+        CollectorSyncTask.report_date == report_date,
+        CollectorSyncTask.authoritative_slot == authoritative_slot,
+    ))
     if existing is not None:
         return existing, False
     return (
@@ -1189,6 +1195,7 @@ def _get_or_create_daily_sync_task(
             account_id=account_id,
             collector_instance_id=collector_instance_id,
             report_date=report_date,
+            authoritative_slot=authoritative_slot,
             external_request_id=external_request_id,
         ),
         True,
@@ -1229,7 +1236,8 @@ def _create_daily_sync_task(
     account_id: int,
     collector_instance_id: int,
     report_date: date,
-    external_request_id: str | None,
+    authoritative_slot: int | None = None,
+    external_request_id: str | None = None,
 ) -> CollectorSyncTask:
     """创建新的日报同步任务。
 
@@ -1242,6 +1250,7 @@ def _create_daily_sync_task(
         report_date=report_date,
         status="pending",
         credential_version=_active_credential_version_for_task(db, account_id=account_id),
+        authoritative_slot=authoritative_slot,
         external_request_id=external_request_id or f"daily-{account_id}-{report_date.isoformat()}-{token_urlsafe(8)}",
     )
     db.add(task)
@@ -1578,6 +1587,23 @@ def _launch_hourly_sync_runtime(instance: CollectorInstance) -> None:
 # 各类报表查询
 # ============================================================================
 
+BEIJING_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _beijing_date_range_utc(start_date: date, end_date: date) -> tuple[datetime, datetime]:
+    local_start = datetime.combine(start_date, datetime.min.time(), tzinfo=BEIJING_TIMEZONE)
+    local_end = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=BEIJING_TIMEZONE)
+    return (
+        local_start.astimezone(timezone.utc).replace(tzinfo=None),
+        local_end.astimezone(timezone.utc).replace(tzinfo=None),
+    )
+
+
+def _beijing_report_parts(value: datetime) -> tuple[date, int]:
+    aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    local = aware.astimezone(BEIJING_TIMEZONE)
+    return local.date(), local.hour
+
 def list_account_daily_reports(
     db: Session,
     *,
@@ -1602,7 +1628,7 @@ def list_account_hourly_reports(
     *,
     account_id: int | None = None,
     report_date: date | None = None,
-) -> list[AccountHourlyReport]:
+) -> list[schemas.AccountHourlyReportRead]:
     """查询账号小时报表。
 
     按时间降序 → account_id → 国家代码 → 广告位 ID 排列。
@@ -1616,8 +1642,15 @@ def list_account_hourly_reports(
     if account_id is not None:
         query = query.where(AccountHourlyReport.account_id == account_id)
     if report_date is not None:
-        query = query.where(AccountHourlyReport.report_date == report_date)
-    return list(db.scalars(query))
+        start_utc, end_utc = _beijing_date_range_utc(report_date, report_date)
+        query = query.where(AccountHourlyReport.report_time_utc >= start_utc, AccountHourlyReport.report_time_utc < end_utc)
+    rows = list(db.scalars(query))
+    return [
+        schemas.AccountHourlyReportRead.model_validate(row).model_copy(
+            update=dict(zip(("report_date", "hour"), _beijing_report_parts(row.report_time_utc)))
+        )
+        for row in rows
+    ]
 
 
 def list_site_daily_reports(
@@ -1647,7 +1680,7 @@ def list_site_hourly_reports(
     *,
     account_id: int | None = None,
     report_date: date | None = None,
-) -> list[SiteHourlyReport]:
+) -> list[schemas.SiteHourlyReportRead]:
     """查询站点小时报表。
 
     按时间降序 → account_id → url → 国家代码 → 广告位 ID 排列。
@@ -1662,8 +1695,15 @@ def list_site_hourly_reports(
     if account_id is not None:
         query = query.where(SiteHourlyReport.account_id == account_id)
     if report_date is not None:
-        query = query.where(SiteHourlyReport.report_date == report_date)
-    return list(db.scalars(query))
+        start_utc, end_utc = _beijing_date_range_utc(report_date, report_date)
+        query = query.where(SiteHourlyReport.report_time_utc >= start_utc, SiteHourlyReport.report_time_utc < end_utc)
+    rows = list(db.scalars(query))
+    return [
+        schemas.SiteHourlyReportRead.model_validate(row).model_copy(
+            update=dict(zip(("report_date", "hour"), _beijing_report_parts(row.report_time_utc)))
+        )
+        for row in rows
+    ]
 
 
 # ============================================================================
@@ -1871,7 +1911,11 @@ DIMENSION_DATA_AVAILABLE_FROM = date(2026, 8, 2)
 def _dimension_row(report: Any, *, site_name: str | None = None) -> schemas.DimensionReportRow:
     source_timezone = getattr(report, "source_timezone", None)
     is_hourly = hasattr(report, "hour")
-    return schemas.DimensionReportRow(account_id=report.account_id, report_date=report.report_date, site_name=site_name, ad_country_code=report.ad_country_code, ad_country_name=report.ad_country_name, ad_slot_id=report.ad_slot_id, ad_slot_name=report.ad_slot_name, source_kind=getattr(report, "source_kind", "hourly"), responses_served=report.responses_served, requests=report.requests, impressions=report.impressions, clicks=report.clicks, revenue=float(report.revenue), ecpm=float(report.ecpm), coverage_rate=(report.responses_served / report.requests if report.requests else 0.0), click_through_rate=(report.clicks / report.impressions if report.impressions else 0.0), impression_rate=(report.impressions / report.responses_served if report.responses_served else 0.0), coverage_hours=getattr(report, "coverage_hours", 1 if is_hourly else 0), expected_hours=getattr(report, "expected_hours", _expected_hours_for_timezone(report.report_date, source_timezone) if source_timezone else 24), is_complete=getattr(report, "is_complete", False), hour=getattr(report, "hour", None), report_time_utc=getattr(report, "report_time_utc", None), source_timezone=source_timezone)
+    report_date = report.report_date
+    hour = getattr(report, "hour", None)
+    if is_hourly and getattr(report, "report_time_utc", None) is not None:
+        report_date, hour = _beijing_report_parts(report.report_time_utc)
+    return schemas.DimensionReportRow(account_id=report.account_id, report_date=report_date, site_name=site_name, ad_country_code=report.ad_country_code, ad_country_name=report.ad_country_name, ad_slot_id=report.ad_slot_id, ad_slot_name=report.ad_slot_name, source_kind=getattr(report, "source_kind", "hourly"), responses_served=report.responses_served, requests=report.requests, impressions=report.impressions, clicks=report.clicks, revenue=float(report.revenue), ecpm=float(report.ecpm), coverage_rate=(report.responses_served / report.requests if report.requests else 0.0), click_through_rate=(report.clicks / report.impressions if report.impressions else 0.0), impression_rate=(report.impressions / report.responses_served if report.responses_served else 0.0), coverage_hours=getattr(report, "coverage_hours", 1 if is_hourly else 0), expected_hours=getattr(report, "expected_hours", _expected_hours_for_timezone(report.report_date, source_timezone) if source_timezone else 24), is_complete=getattr(report, "is_complete", False), hour=hour, report_time_utc=getattr(report, "report_time_utc", None), source_timezone=source_timezone)
 
 
 def _resolve_dimension_date_range(*, report_date: date | None, start_date: date | None, end_date: date | None) -> tuple[date, date]:
@@ -1931,7 +1975,8 @@ def _expected_hours_for_timezone(report_date: date, timezone_name: str) -> int:
 
 def list_mid_platform_account_hourly_dimensions(db: Session, *, report_date: date | None = None, start_date: date | None = None, end_date: date | None = None, account_id: int | None = None, ad_country_code: str | None = None, ad_slot_id: str | None = None, page: int = 1, page_size: int = 100) -> schemas.DimensionReportResponse:
     start_date, end_date = _resolve_dimension_date_range(report_date=report_date, start_date=start_date, end_date=end_date)
-    query = select(AccountHourlyReport).where(AccountHourlyReport.report_date.between(start_date, end_date)).order_by(AccountHourlyReport.report_date, AccountHourlyReport.account_id, AccountHourlyReport.report_time_utc, AccountHourlyReport.ad_country_code, AccountHourlyReport.ad_slot_id)
+    start_utc, end_utc = _beijing_date_range_utc(start_date, end_date)
+    query = select(AccountHourlyReport).where(AccountHourlyReport.report_time_utc >= start_utc, AccountHourlyReport.report_time_utc < end_utc).order_by(AccountHourlyReport.report_time_utc, AccountHourlyReport.account_id, AccountHourlyReport.ad_country_code, AccountHourlyReport.ad_slot_id)
     if account_id is not None: query = query.where(AccountHourlyReport.account_id == account_id)
     if ad_country_code is not None: query = query.where(AccountHourlyReport.ad_country_code == ad_country_code)
     if ad_slot_id is not None: query = query.where(AccountHourlyReport.ad_slot_id == ad_slot_id)
@@ -1941,7 +1986,8 @@ def list_mid_platform_account_hourly_dimensions(db: Session, *, report_date: dat
 
 def list_mid_platform_site_hourly_dimensions(db: Session, *, report_date: date | None = None, start_date: date | None = None, end_date: date | None = None, account_id: int | None = None, site_name: str | None = None, ad_country_code: str | None = None, ad_slot_id: str | None = None, page: int = 1, page_size: int = 100) -> schemas.DimensionReportResponse:
     start_date, end_date = _resolve_dimension_date_range(report_date=report_date, start_date=start_date, end_date=end_date)
-    query = select(SiteHourlyReport).where(SiteHourlyReport.report_date.between(start_date, end_date)).order_by(SiteHourlyReport.report_date, SiteHourlyReport.account_id, SiteHourlyReport.report_time_utc, SiteHourlyReport.url_id, SiteHourlyReport.ad_country_code, SiteHourlyReport.ad_slot_id)
+    start_utc, end_utc = _beijing_date_range_utc(start_date, end_date)
+    query = select(SiteHourlyReport).where(SiteHourlyReport.report_time_utc >= start_utc, SiteHourlyReport.report_time_utc < end_utc).order_by(SiteHourlyReport.report_time_utc, SiteHourlyReport.account_id, SiteHourlyReport.url_id, SiteHourlyReport.ad_country_code, SiteHourlyReport.ad_slot_id)
     if account_id is not None: query = query.where(SiteHourlyReport.account_id == account_id)
     if site_name is not None: query = query.where(SiteHourlyReport.url == site_name)
     if ad_country_code is not None: query = query.where(SiteHourlyReport.ad_country_code == ad_country_code)
@@ -2265,7 +2311,10 @@ def list_mid_platform_account_hourly_report(
         select(Account, CollectorInstance, AccountHourlyReport)
         .join(CollectorInstance, CollectorInstance.account_id == Account.id)
         .join(AccountHourlyReport, AccountHourlyReport.account_id == Account.id)
-        .where(AccountHourlyReport.report_date == report_date)
+        .where(
+            AccountHourlyReport.report_time_utc >= _beijing_date_range_utc(report_date, report_date)[0],
+            AccountHourlyReport.report_time_utc < _beijing_date_range_utc(report_date, report_date)[1],
+        )
         .order_by(
             Account.id,
             AccountHourlyReport.report_time_utc.asc(),
@@ -2285,8 +2334,8 @@ def list_mid_platform_account_hourly_report(
             instance_name=instance.name,
             node_base_url=instance.report_base_url or "",
             node_account_key=instance.report_account_key or instance.name,
-            report_date=hourly.report_date,
-            hour=hourly.hour,
+            report_date=_beijing_report_parts(hourly.report_time_utc)[0],
+            hour=_beijing_report_parts(hourly.report_time_utc)[1],
             report_time_utc=_serialize_utc_datetime(hourly.report_time_utc),
             source_timezone=hourly.source_timezone,
             currency=hourly.currency,
@@ -2306,11 +2355,7 @@ def list_mid_platform_account_hourly_report(
     ]
     return schemas.MidPlatformAccountHourlyReportResponse(
         report_date=report_date,
-        timezone=resolve_report_timezone(
-            db,
-            account_id=account_id,
-            account_ids={item.account_id for item in items},
-        ),
+        timezone="Asia/Shanghai",
         items=items,
     )
 
@@ -2330,7 +2375,10 @@ def list_mid_platform_site_hourly_report(
         select(Account, CollectorInstance, SiteHourlyReport)
         .join(CollectorInstance, CollectorInstance.account_id == Account.id)
         .join(SiteHourlyReport, SiteHourlyReport.account_id == Account.id)
-        .where(SiteHourlyReport.report_date == report_date)
+        .where(
+            SiteHourlyReport.report_time_utc >= _beijing_date_range_utc(report_date, report_date)[0],
+            SiteHourlyReport.report_time_utc < _beijing_date_range_utc(report_date, report_date)[1],
+        )
         .order_by(
             Account.id,
             SiteHourlyReport.report_time_utc.asc(),
@@ -2351,8 +2399,8 @@ def list_mid_platform_site_hourly_report(
             instance_name=instance.name,
             node_base_url=instance.report_base_url or "",
             node_account_key=instance.report_account_key or instance.name,
-            report_date=hourly.report_date,
-            hour=hourly.hour,
+            report_date=_beijing_report_parts(hourly.report_time_utc)[0],
+            hour=_beijing_report_parts(hourly.report_time_utc)[1],
             report_time_utc=_serialize_utc_datetime(hourly.report_time_utc),
             source_timezone=hourly.source_timezone,
             currency=hourly.currency,
@@ -2373,11 +2421,7 @@ def list_mid_platform_site_hourly_report(
     ]
     return schemas.MidPlatformSiteHourlyReportResponse(
         report_date=report_date,
-        timezone=resolve_report_timezone(
-            db,
-            account_id=account_id,
-            account_ids={item.account_id for item in items},
-        ),
+        timezone="Asia/Shanghai",
         items=items,
     )
 

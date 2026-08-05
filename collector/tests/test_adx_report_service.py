@@ -56,6 +56,51 @@ def test_fetch_site_daily_report_returns_typed_rows() -> None:
     assert soap_client.calls == [(1, date(2026, 5, 14))]
 
 
+def test_build_authoritative_daily_fetch_batch_contains_core_and_dimension_rows() -> None:
+    from app.adx_report_service import (
+        AdxApiCredentials,
+        AdxDailyDimensionReportRow,
+        AdxReportRow,
+        AdxReportService,
+    )
+
+    service = AdxReportService(
+        credentials=AdxApiCredentials(
+            network_code="23347208010",
+            client_id="client-id",
+            client_secret="client-secret",
+            refresh_token="refresh-token",
+        )
+    )
+
+    batch = service.build_authoritative_daily_fetch_batch(
+        core_rows=[AdxReportRow("2026-05-14", "example.com", 10, 12, 8, 1, "1.000000", "125.000000")],
+        dimension_rows=[
+            AdxDailyDimensionReportRow(
+                "2026-05-14", "example.com", "US", "US", "slot-1", "Top Banner",
+                10, 12, 8, 1, "1.000000", "125.000000",
+            )
+        ],
+    )
+
+    assert batch is not None
+    assert batch.schema_version == "admanager_authoritative_daily_v1"
+    assert batch.row_count == 2
+    assert batch.rows == [{
+        "core_rows": [{
+            "report_date": "2026-05-14", "url_id": "example.com", "url": "example.com",
+            "responses_served": 10, "requests": 12, "impressions": 8, "clicks": 1,
+            "revenue": "1.000000", "ecpm": "125.000000",
+        }],
+        "dimension_rows": [{
+            "report_date": "2026-05-14", "url_id": "example.com", "url": "example.com",
+            "ad_country_code": "US", "ad_country_name": "US", "ad_slot_id": "slot-1",
+            "ad_slot_name": "Top Banner", "responses_served": 10, "requests": 12,
+            "impressions": 8, "clicks": 1, "revenue": "1.000000", "ecpm": "125.000000",
+        }],
+    }]
+
+
 def test_fetch_site_daily_range_aggregates_days() -> None:
     from app.adx_report_service import AdxApiCredentials, AdxReportService
 

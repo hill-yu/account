@@ -16,6 +16,7 @@ from app.models.oauth_app_config import OAuthAppConfig
 from app.models.oauth_credential import OAuthCredential
 from app.models.oauth_event import OAuthEvent
 from app.models.proxy_binding import ProxyBinding
+from app.models.authoritative_daily_version_summary import AuthoritativeDailyVersionSummary
 
 __all__ = [
     "Account",
@@ -36,4 +37,5 @@ __all__ = [
     "CollectorSyncLog",
     "CollectorIngestionBatch",
     "FetchSchedule",
+    "AuthoritativeDailyVersionSummary",
 ]

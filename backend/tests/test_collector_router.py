@@ -2284,9 +2284,9 @@ def test_operator_can_generate_mid_platform_hourly_reports(client: TestClient) -
     finally:
         db.close()
 
-    account_response = client.get("/api/v1/operator/mid-platform/reports/account-hourly", params={"report_date": "2026-05-16"})
+    account_response = client.get("/api/v1/operator/mid-platform/reports/account-hourly", params={"report_date": "2026-05-17"})
     assert account_response.status_code == 200
-    assert account_response.json()["timezone"] == "America/Los_Angeles"
+    assert account_response.json()["timezone"] == "Asia/Shanghai"
     assert account_response.json()["items"] == [
         {
             "account_id": account_id,
@@ -2295,8 +2295,8 @@ def test_operator_can_generate_mid_platform_hourly_reports(client: TestClient) -
             "instance_name": "collector-hourly",
             "node_base_url": "https://node-hourly.example.com",
             "node_account_key": "a-hourly",
-            "report_date": "2026-05-16",
-            "hour": 9,
+            "report_date": "2026-05-17",
+            "hour": 0,
             "report_time_utc": "2026-05-16T16:00:00Z",
             "source_timezone": "America/Los_Angeles",
             "currency": "USD",
@@ -2314,9 +2314,9 @@ def test_operator_can_generate_mid_platform_hourly_reports(client: TestClient) -
         }
     ]
 
-    site_response = client.get("/api/v1/operator/mid-platform/reports/site-hourly", params={"report_date": "2026-05-16"})
+    site_response = client.get("/api/v1/operator/mid-platform/reports/site-hourly", params={"report_date": "2026-05-17"})
     assert site_response.status_code == 200
-    assert site_response.json()["timezone"] == "America/Los_Angeles"
+    assert site_response.json()["timezone"] == "Asia/Shanghai"
     assert site_response.json()["items"] == [
         {
             "account_id": account_id,
@@ -2325,8 +2325,8 @@ def test_operator_can_generate_mid_platform_hourly_reports(client: TestClient) -
             "instance_name": "collector-hourly",
             "node_base_url": "https://node-hourly.example.com",
             "node_account_key": "a-hourly",
-            "report_date": "2026-05-16",
-            "hour": 9,
+            "report_date": "2026-05-17",
+            "hour": 0,
             "report_time_utc": "2026-05-16T16:00:00Z",
             "source_timezone": "America/Los_Angeles",
             "currency": "USD",

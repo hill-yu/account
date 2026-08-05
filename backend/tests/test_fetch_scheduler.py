@@ -227,13 +227,51 @@ def test_scheduler_only_creates_daily_fetch_for_gray_accounts(
     with session_factory() as session:
         tasks = list(session.scalars(select(CollectorSyncTask).order_by(CollectorSyncTask.id.asc())))
 
-    assert [task.task_type for task in tasks] == ["report_fetch", "report_fetch", "report_fetch"]
+    assert [task.task_type for task in tasks] == ["report_fetch"]
     assert {task.account_id for task in tasks} == {gray_account_id}
     assert {task.collector_instance_id for task in tasks} == {gray_instance_id}
-    assert [task.report_date for task in tasks] == [date(2026, 7, 9), date(2026, 7, 10), date(2026, 7, 11)]
+    assert [task.report_date for task in tasks] == [date(2026, 7, 11)]
+    assert tasks[0].authoritative_slot == 5
 
 
-def test_scheduler_creates_daily_fetch_tasks_for_recent_three_days(
+def test_scheduler_creates_one_authoritative_task_for_each_due_local_slot(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_id, _ = _create_account_with_instance(
+        session_factory,
+        account_name="slot-account",
+        instance_name="slot-instance",
+        report_account_key="slot-account",
+    )
+    with session_factory() as session:
+        session.get(Account, account_id).timezone = "UTC"
+        session.commit()
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+
+    for hour in (5, 6, 7):
+        FetchScheduler(
+            session_factory=session_factory,
+            timeout_seconds=15,
+            now_provider=lambda hour=hour: datetime(2026, 8, 5, hour, 15, tzinfo=UTC),
+        ).run_pending_once()
+        with session_factory() as session:
+            latest = session.scalar(
+                select(CollectorSyncTask)
+                .where(CollectorSyncTask.account_id == account_id)
+                .order_by(CollectorSyncTask.id.desc())
+            )
+            latest.status = "succeeded"
+            session.commit()
+
+    with session_factory() as session:
+        tasks = list(session.scalars(select(CollectorSyncTask).where(CollectorSyncTask.account_id == account_id)))
+
+    assert [task.report_date for task in tasks] == [date(2026, 8, 4)] * 3
+    assert [task.authoritative_slot for task in tasks] == [5, 6, 7]
+
+
+def test_scheduler_creates_daily_fetch_only_for_previous_business_day(
     session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -266,9 +304,9 @@ def test_scheduler_creates_daily_fetch_tasks_for_recent_three_days(
             )
         )
 
-    assert [task.task_type for task in tasks] == ["report_fetch", "report_fetch", "report_fetch"]
-    assert [task.collector_instance_id for task in tasks] == [instance_id, instance_id, instance_id]
-    assert [task.report_date for task in tasks] == [date(2026, 7, 9), date(2026, 7, 10), date(2026, 7, 11)]
+    assert [task.task_type for task in tasks] == ["report_fetch"]
+    assert [task.collector_instance_id for task in tasks] == [instance_id]
+    assert [task.report_date for task in tasks] == [date(2026, 7, 11)]
 
 
 def test_scheduler_does_not_treat_derived_daily_rows_as_authoritative_fetches(
@@ -318,7 +356,7 @@ def test_scheduler_does_not_treat_derived_daily_rows_as_authoritative_fetches(
             )
         )
 
-    assert [task.report_date for task in tasks] == [date(2026, 7, 9), date(2026, 7, 10), date(2026, 7, 11)]
+    assert [task.report_date for task in tasks] == [date(2026, 7, 11)]
 
 
 def test_scheduler_skips_when_active_daily_fetch_task_exists(
@@ -366,8 +404,8 @@ def test_scheduler_skips_when_active_daily_fetch_task_exists(
             )
         )
 
-    assert [task.report_date for task in tasks] == [date(2026, 7, 9), date(2026, 7, 10), date(2026, 7, 11)]
-    assert len([task for task in tasks if task.report_date == date(2026, 7, 10)]) == 1
+    assert [task.report_date for task in tasks] == [date(2026, 7, 10), date(2026, 7, 11)]
+    assert len([task for task in tasks if task.report_date == date(2026, 7, 11)]) == 1
 
 
 def test_scheduler_skips_dates_not_ready_for_authoritative_daily(
@@ -403,7 +441,7 @@ def test_scheduler_skips_dates_not_ready_for_authoritative_daily(
             )
         )
 
-    assert [task.report_date for task in tasks] == [date(2026, 7, 8), date(2026, 7, 9), date(2026, 7, 10)]
+    assert tasks == []
 
 
 def test_scheduler_skips_accounts_marked_as_do_not_fetch(

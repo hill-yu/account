@@ -35,6 +35,7 @@ class CollectorSyncTask(Base):
     report_date: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
     credential_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    authoritative_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
     external_request_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

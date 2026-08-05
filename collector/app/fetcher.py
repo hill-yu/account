@@ -153,8 +153,15 @@ class AdManagerSoapReportFetcher:
             if batch is None:
                 return ()
             return (batch,)
-        rows = self._service.fetch_site_daily_report(report_date=task.report_date, task_id=task.id)
-        batch = self._service.build_fetch_batch(rows=rows)
+        core_rows = self._service.fetch_site_daily_report(report_date=task.report_date, task_id=task.id)
+        dimension_rows = self._service.fetch_site_daily_dimension_report(
+            report_date=task.report_date,
+            task_id=task.id,
+        )
+        batch = self._service.build_authoritative_daily_fetch_batch(
+            core_rows=core_rows,
+            dimension_rows=dimension_rows,
+        )
         if batch is None:
             return ()
         return (batch,)
