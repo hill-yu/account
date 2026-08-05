@@ -82,14 +82,6 @@ class AdxHourlyReportRow:
         }
 
 
-@dataclass(frozen=True)
-class AdxDailyDimensionReportRow:
-    report_date: str; site_name: str; ad_country_code: str; ad_country_name: str; ad_slot_id: str; ad_slot_name: str
-    responses_served: int; requests: int; impressions: int; clicks: int; revenue: str; ecpm: str
-    def as_collector_row(self) -> dict[str, object]:
-        return {"report_date": self.report_date, "url_id": self.site_name, "url": self.site_name, "ad_country_code": self.ad_country_code, "ad_country_name": self.ad_country_name, "ad_slot_id": self.ad_slot_id, "ad_slot_name": self.ad_slot_name, "responses_served": self.responses_served, "requests": self.requests, "impressions": self.impressions, "clicks": self.clicks, "revenue": self.revenue, "ecpm": self.ecpm}
-
-
 class AdxReportService:
     def __init__(
         self,
@@ -109,15 +101,6 @@ class AdxReportService:
         soap_client = self._build_soap_client()
         rows = soap_client.fetch_rows(task_id=task_id, report_date=report_date)
         return [_row_from_collector_dict(row) for row in rows]
-
-    def fetch_site_daily_dimension_report(self, *, report_date: date, task_id: int = 1) -> list[AdxDailyDimensionReportRow]:
-        rows = self._build_soap_client().fetch_daily_dimension_rows(task_id=task_id, report_date=report_date)
-        return [_daily_dimension_row_from_collector_dict(row) for row in rows]
-
-    def build_daily_dimension_fetch_batch(self, *, rows: list[AdxDailyDimensionReportRow], batch_key: str = "page-1") -> FetchBatch | None:
-        if not rows: return None
-        collector_rows = [row.as_collector_row() for row in rows]
-        return FetchBatch(batch_key=batch_key, row_count=len(collector_rows), payload_hash=_hash_rows(collector_rows), schema_version="admanager_daily_dimension_v1", rows=collector_rows)
 
     def fetch_site_daily_range(
         self,
@@ -222,17 +205,6 @@ def _row_from_collector_dict(row: dict[str, object]) -> AdxReportRow:
         clicks=int(row["clicks"]),
         revenue=str(row["revenue"]),
         ecpm=str(row["ecpm"]),
-    )
-
-
-def _daily_dimension_row_from_collector_dict(row: dict[str, object]) -> AdxDailyDimensionReportRow:
-    return AdxDailyDimensionReportRow(
-        report_date=str(row["report_date"]), site_name=str(row["url"]),
-        ad_country_code=str(row["ad_country_code"]), ad_country_name=str(row["ad_country_name"]),
-        ad_slot_id=str(row["ad_slot_id"]), ad_slot_name=str(row["ad_slot_name"]),
-        responses_served=int(row["responses_served"]), requests=int(row["requests"]),
-        impressions=int(row["impressions"]), clicks=int(row["clicks"]),
-        revenue=str(row["revenue"]), ecpm=str(row["ecpm"]),
     )
 
 
