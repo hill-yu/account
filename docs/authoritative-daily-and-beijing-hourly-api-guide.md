@@ -7,6 +7,18 @@
 - 三个成功版本均按完整版本发布，允许指标增加或减少。`user_system` 建议在账户时区 07:00 后读取；异常时由运维人工刷新。
 - 现有权威日报读取接口及字段保持兼容，本次不修改 `user_system`。
 
+### 日报完整标志
+
+以下五个日报读取接口返回的每条 `items` 记录均包含 `"is_finalized": true`：
+
+- `GET /api/v1/operator/mid-platform/reports/account-daily`
+- `GET /api/v1/operator/mid-platform/reports/site-daily`
+- `GET /api/v1/operator/mid-platform/reports/link-daily`
+- `GET /api/v1/operator/mid-platform/reports/account-daily-dimensions`
+- `GET /api/v1/operator/mid-platform/reports/site-daily-dimensions`
+
+该字段表示该记录是中台当前已入库、允许消费方正式入库的权威日报版本。它不表示 Google 后续不会延迟更新或回滚；05:00、06:00、07:00 或人工刷新产生的新成功版本仍可能覆盖当前值。接口不返回 `is_finalized=false` 的处理中间态，`user_system` 可继续以 `is_finalized is true` 作为正式入库条件。该字段只属于日报接口，小时接口不返回此字段。
+
 人工刷新接口为 `POST /api/v1/operator/accounts/{account_id}/authoritative-daily-refresh`：
 
 ```json

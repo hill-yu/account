@@ -360,13 +360,13 @@ def list_mid_platform_account_daily_report(
     )
 
 
-@router.get("/operator/mid-platform/reports/account-daily-dimensions", response_model=schemas.DimensionReportResponse)
-def list_mid_platform_account_daily_dimensions(report_date: date | None = Query(default=None), start_date: date | None = Query(default=None), end_date: date | None = Query(default=None), account_id: int | None = Query(default=None), ad_country_code: str | None = Query(default=None), ad_slot_id: str | None = Query(default=None), page: int = Query(default=1, ge=1), page_size: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db)) -> schemas.DimensionReportResponse:
+@router.get("/operator/mid-platform/reports/account-daily-dimensions", response_model=schemas.FinalizedDailyDimensionReportResponse)
+def list_mid_platform_account_daily_dimensions(report_date: date | None = Query(default=None), start_date: date | None = Query(default=None), end_date: date | None = Query(default=None), account_id: int | None = Query(default=None), ad_country_code: str | None = Query(default=None), ad_slot_id: str | None = Query(default=None), page: int = Query(default=1, ge=1), page_size: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db)) -> schemas.FinalizedDailyDimensionReportResponse:
     return service.list_mid_platform_account_daily_dimensions(db, account_id=account_id, report_date=report_date, start_date=start_date, end_date=end_date, ad_country_code=ad_country_code, ad_slot_id=ad_slot_id, page=page, page_size=page_size)
 
 
-@router.get("/operator/mid-platform/reports/site-daily-dimensions", response_model=schemas.DimensionReportResponse)
-def list_mid_platform_site_daily_dimensions(report_date: date | None = Query(default=None), start_date: date | None = Query(default=None), end_date: date | None = Query(default=None), account_id: int | None = Query(default=None), site_name: str | None = Query(default=None), ad_country_code: str | None = Query(default=None), ad_slot_id: str | None = Query(default=None), page: int = Query(default=1, ge=1), page_size: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db)) -> schemas.DimensionReportResponse:
+@router.get("/operator/mid-platform/reports/site-daily-dimensions", response_model=schemas.FinalizedDailyDimensionReportResponse)
+def list_mid_platform_site_daily_dimensions(report_date: date | None = Query(default=None), start_date: date | None = Query(default=None), end_date: date | None = Query(default=None), account_id: int | None = Query(default=None), site_name: str | None = Query(default=None), ad_country_code: str | None = Query(default=None), ad_slot_id: str | None = Query(default=None), page: int = Query(default=1, ge=1), page_size: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db)) -> schemas.FinalizedDailyDimensionReportResponse:
     return service.list_mid_platform_site_daily_dimensions(db, account_id=account_id, report_date=report_date, start_date=start_date, end_date=end_date, site_name=site_name, ad_country_code=ad_country_code, ad_slot_id=ad_slot_id, page=page, page_size=page_size)
 
 

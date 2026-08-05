@@ -455,9 +455,19 @@ def test_hourly_dimension_batch_projects_hourly_facts_without_overwriting_author
     assert daily_dimension_response.status_code == 200
     daily_item = daily_dimension_response.json()["items"][0]
     assert daily_item["source_kind"] == "authoritative_daily"
+    assert daily_item["is_finalized"] is True
     assert daily_item["coverage_rate"] == pytest.approx(100 / 130)
     assert daily_item["click_through_rate"] == pytest.approx(4 / 80)
     assert daily_item["impression_rate"] == pytest.approx(80 / 100)
+
+    assert "is_finalized" not in dimensions.json()["items"][0]
+
+    account_daily_dimension_response = test_client.get(
+        "/api/v1/operator/mid-platform/reports/account-daily-dimensions",
+        params={"account_id": 1, "report_date": "2026-05-21", "ad_country_code": "US", "ad_slot_id": "slot-top"},
+    )
+    assert account_daily_dimension_response.status_code == 200
+    assert account_daily_dimension_response.json()["items"][0]["is_finalized"] is True
 
     zero_denominator = test_client.post(
         f"/api/v1/collector/tasks/{task_id}/batches",

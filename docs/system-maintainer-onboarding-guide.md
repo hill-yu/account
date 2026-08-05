@@ -1002,3 +1002,16 @@ npm run build
 - 验证：backend `155 passed`；collector `89 passed`；Alembic 空 SQLite `upgrade -> downgrade 20260802_0014 -> upgrade head` 成功；`git diff --check` 通过（仅换行提示）。
 - 回滚：停止使用新接口，代码回退上一 `dev` 提交；仅在尚无依赖数据时将 Alembic 降至 `20260802_0014`。生产发布前另行准备数据库备份和灰度回滚方案。
 - 审阅、Git 与发布：最终独立审阅发现的“人工/自动日报活动任务竞态”和“历史 NULL 槽位迟到覆盖”两个 P1 已按 TDD 修复，复审无 P0/P1。功能提交为 `277aaa0`；VPS 隔离仓库 `/srv/adx-mid-platform-dev` 已验证 backend `155 passed`、collector `89 passed`、迁移往返成功，人工刷新接口 1 项及日报/北京时间集成测试 7 项通过。因本机到 GitHub 443 不通且 VPS 无写凭据，远端 `origin/dev` 暂仍为 `54711dc`，VPS 通过只含该提交的 Git bundle 快进到 `277aaa0`；未合并 `master`、未部署生产。
+
+### 2026-08-05 — 权威日报 `is_finalized` 接口契约修复
+
+- 状态：本地修复、完整回归和独立审阅完成，待 Git 提交；未部署生产。
+- 需求或问题：中台已有权威日报和日报维度数据，但五个日报读取接口未返回 `is_finalized`；现有 `user_system` 严格要求该字段为 `true` 才正式入库，导致同步结果为空。
+- 变更内容：账户日报、站点日报、Link 日报 schema 增加恒为 `true` 的完成标志；账户和站点日报维度改用专用完成响应 schema；同步修正设计说明、对接文档和问题台账。
+- 修改原因：此前设计错误假定 `user_system` 不需要完成标志，实际联调暴露出接口契约不一致。
+- 实施方案：对中台当前已入库、允许消费方正式入库的日报响应附加 `is_finalized: true`；该字段不承诺 Google 后续不会延迟更新或回滚，后续成功刷新仍可覆盖当前值；小时接口保持不变。
+- 预期后果与影响范围：`user_system` 可按现有判断入库五类日报数据；属于向后兼容的响应字段增加。不修改数据库、既有数据、Google 拉取、调度、OAuth、代理或 `user_system`。
+- 验证标准：五个日报接口逐行返回布尔值 `true`，小时接口无该字段，后端和采集器全量回归通过，独立审阅无 P0/P1。
+- 回滚：撤销日报 schema 字段和日报维度专用响应转换即可；无需数据库或数据回滚。
+- 测试、审阅与 Git：TDD 红灯已确认五类接口缺字段；定向绿灯为 collector router `3 passed`、ingestion `1 passed`；完整回归为 backend `155 passed`、collector `89 passed`；`git diff --check` 通过（仅换行提示）。独立审阅首轮发现字段语义对旧写入路径作出过强保证的 1 个 P1，以及设计文档列表位置 1 个 P2；已统一收窄契约语义并修正文档结构，复审 P0/P1/P2 均为 0。提交号在提交后回填。
+- 发布状态：未部署；本次仅本地 `dev` 修复并提交 Git。

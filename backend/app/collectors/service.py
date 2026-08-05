@@ -1962,6 +1962,20 @@ def _dimension_response(*, start_date: date, end_date: date, total: int, items: 
     return schemas.DimensionReportResponse(report_date=start_date if start_date == end_date else None, start_date=start_date, end_date=end_date, dimension_data_available=end_date >= DIMENSION_DATA_AVAILABLE_FROM, available_from=DIMENSION_DATA_AVAILABLE_FROM, page=page, page_size=page_size, total=total, items=items)
 
 
+def _finalized_daily_dimension_response(*, start_date: date, end_date: date, total: int, items: list[schemas.DimensionReportRow], page: int, page_size: int) -> schemas.FinalizedDailyDimensionReportResponse:
+    return schemas.FinalizedDailyDimensionReportResponse(
+        report_date=start_date if start_date == end_date else None,
+        start_date=start_date,
+        end_date=end_date,
+        dimension_data_available=end_date >= DIMENSION_DATA_AVAILABLE_FROM,
+        available_from=DIMENSION_DATA_AVAILABLE_FROM,
+        page=page,
+        page_size=page_size,
+        total=total,
+        items=[schemas.FinalizedDailyDimensionReportRow(**item.model_dump()) for item in items],
+    )
+
+
 def _page_dimension_query(db: Session, query: Any, *, page: int, page_size: int) -> tuple[int, list[Any]]:
     """Count and fetch only the requested stable page; never materialize all rows."""
     total = int(db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0)
@@ -1969,17 +1983,17 @@ def _page_dimension_query(db: Session, query: Any, *, page: int, page_size: int)
     return total, rows
 
 
-def list_mid_platform_account_daily_dimensions(db: Session, *, report_date: date | None = None, start_date: date | None = None, end_date: date | None = None, account_id: int | None = None, ad_country_code: str | None = None, ad_slot_id: str | None = None, page: int = 1, page_size: int = 100) -> schemas.DimensionReportResponse:
+def list_mid_platform_account_daily_dimensions(db: Session, *, report_date: date | None = None, start_date: date | None = None, end_date: date | None = None, account_id: int | None = None, ad_country_code: str | None = None, ad_slot_id: str | None = None, page: int = 1, page_size: int = 100) -> schemas.FinalizedDailyDimensionReportResponse:
     start_date, end_date = _resolve_dimension_date_range(report_date=report_date, start_date=start_date, end_date=end_date)
     query = select(AccountDailyDimensionReport).where(AccountDailyDimensionReport.report_date.between(start_date, end_date)).order_by(AccountDailyDimensionReport.report_date, AccountDailyDimensionReport.account_id, AccountDailyDimensionReport.ad_country_code, AccountDailyDimensionReport.ad_slot_id)
     if account_id is not None: query = query.where(AccountDailyDimensionReport.account_id == account_id)
     if ad_country_code is not None: query = query.where(AccountDailyDimensionReport.ad_country_code == ad_country_code)
     if ad_slot_id is not None: query = query.where(AccountDailyDimensionReport.ad_slot_id == ad_slot_id)
     total, rows = _page_dimension_query(db, query, page=page, page_size=page_size)
-    return _dimension_response(start_date=start_date, end_date=end_date, total=total, items=[_dimension_row(row) for row in rows], page=page, page_size=page_size)
+    return _finalized_daily_dimension_response(start_date=start_date, end_date=end_date, total=total, items=[_dimension_row(row) for row in rows], page=page, page_size=page_size)
 
 
-def list_mid_platform_site_daily_dimensions(db: Session, *, report_date: date | None = None, start_date: date | None = None, end_date: date | None = None, account_id: int | None = None, site_name: str | None = None, ad_country_code: str | None = None, ad_slot_id: str | None = None, page: int = 1, page_size: int = 100) -> schemas.DimensionReportResponse:
+def list_mid_platform_site_daily_dimensions(db: Session, *, report_date: date | None = None, start_date: date | None = None, end_date: date | None = None, account_id: int | None = None, site_name: str | None = None, ad_country_code: str | None = None, ad_slot_id: str | None = None, page: int = 1, page_size: int = 100) -> schemas.FinalizedDailyDimensionReportResponse:
     start_date, end_date = _resolve_dimension_date_range(report_date=report_date, start_date=start_date, end_date=end_date)
     query = select(SiteDailyDimensionReport).where(SiteDailyDimensionReport.report_date.between(start_date, end_date)).order_by(SiteDailyDimensionReport.report_date, SiteDailyDimensionReport.account_id, SiteDailyDimensionReport.url_id, SiteDailyDimensionReport.ad_country_code, SiteDailyDimensionReport.ad_slot_id)
     if account_id is not None: query = query.where(SiteDailyDimensionReport.account_id == account_id)
@@ -1987,7 +2001,7 @@ def list_mid_platform_site_daily_dimensions(db: Session, *, report_date: date | 
     if ad_country_code is not None: query = query.where(SiteDailyDimensionReport.ad_country_code == ad_country_code)
     if ad_slot_id is not None: query = query.where(SiteDailyDimensionReport.ad_slot_id == ad_slot_id)
     total, rows = _page_dimension_query(db, query, page=page, page_size=page_size)
-    return _dimension_response(start_date=start_date, end_date=end_date, total=total, items=[_dimension_row(row, site_name=row.url) for row in rows], page=page, page_size=page_size)
+    return _finalized_daily_dimension_response(start_date=start_date, end_date=end_date, total=total, items=[_dimension_row(row, site_name=row.url) for row in rows], page=page, page_size=page_size)
 
 
 def _hourly_dimension_response(rows: list[Any], *, start_date: date, end_date: date, total: int, site: bool, page: int, page_size: int) -> schemas.DimensionReportResponse:

@@ -834,6 +834,7 @@ def test_operator_can_generate_remote_site_daily_report(client: TestClient, monk
     assert response.status_code == 200
     body = response.json()
     assert body["timezone"] == "America/Los_Angeles"
+    assert all(item["is_finalized"] is True for item in body["items"])
 
     assert body["summary"] == {
         "report_date": "2026-05-14",
@@ -864,6 +865,7 @@ def test_operator_can_generate_remote_site_daily_report(client: TestClient, monk
             "clicks": 3,
             "revenue": 2.5,
             "ecpm": 31.25,
+            "is_finalized": True,
             "source_run_id": None,
         },
         {
@@ -881,6 +883,7 @@ def test_operator_can_generate_remote_site_daily_report(client: TestClient, monk
             "clicks": 1,
             "revenue": 1.0,
             "ecpm": 25.0,
+            "is_finalized": True,
             "source_run_id": None,
         },
     ]
@@ -1054,6 +1057,7 @@ def test_operator_can_generate_remote_account_daily_report(client: TestClient, m
     assert response.status_code == 200
     body = response.json()
     assert body["timezone"] == "America/Los_Angeles"
+    assert all(item["is_finalized"] is True for item in body["items"])
 
     assert body["summary"] == {
         "report_date": "2026-05-15",
@@ -1084,6 +1088,7 @@ def test_operator_can_generate_remote_account_daily_report(client: TestClient, m
             "clicks": 3,
             "revenue": 1.5,
             "ecpm": 38.461538,
+            "is_finalized": True,
             "source_run_id": None,
         },
         {
@@ -1101,6 +1106,7 @@ def test_operator_can_generate_remote_account_daily_report(client: TestClient, m
             "clicks": 0,
             "revenue": 0.25,
             "ecpm": 25.0,
+            "is_finalized": True,
             "source_run_id": None,
         },
     ]
@@ -1209,6 +1215,7 @@ def test_operator_can_generate_mid_platform_link_daily_report(client: TestClient
 
     response = client.get("/api/v1/operator/mid-platform/reports/link-daily", params={"report_date": "2026-05-14"})
     assert response.status_code == 200
+    assert all(item["is_finalized"] is True for item in response.json()["items"])
     assert response.json()["timezone"] == "America/Los_Angeles"
     assert response.json()["summary"] == {
         "report_date": "2026-05-14",
@@ -1240,6 +1247,7 @@ def test_operator_can_generate_mid_platform_link_daily_report(client: TestClient
             "clicks": 3,
             "revenue": 12.5,
             "ecpm": 156.25,
+            "is_finalized": True,
             "source_run_id": None,
         }
     ]

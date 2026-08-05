@@ -612,6 +612,7 @@ class MidPlatformSiteDailyRow(BaseModel):
     clicks: int
     revenue: float
     ecpm: float
+    is_finalized: Literal[True] = True
     source_run_id: int | None = None
 
 
@@ -670,6 +671,7 @@ class MidPlatformAccountDailyRow(BaseModel):
     clicks: int
     revenue: float
     ecpm: float
+    is_finalized: Literal[True] = True
     source_run_id: int | None = None
 
 
@@ -728,6 +730,7 @@ class MidPlatformLinkDailyRow(BaseModel):
     clicks: int
     revenue: float
     ecpm: float
+    is_finalized: Literal[True] = True
     source_run_id: int | None = None
 
 
@@ -775,6 +778,14 @@ class DimensionReportResponse(BaseModel):
     page_size: int
     total: int
     items: list[DimensionReportRow]
+
+
+class FinalizedDailyDimensionReportRow(DimensionReportRow):
+    is_finalized: Literal[True] = True
+
+
+class FinalizedDailyDimensionReportResponse(DimensionReportResponse):
+    items: list[FinalizedDailyDimensionReportRow]
 
 
 class HeartbeatRequest(BaseModel):
