@@ -969,7 +969,7 @@ npm run build
 
 ### 2026-08-05 — 权威日报自动尝试窗口调整为业务日结束后五小时
 
-- 状态：独立复审通过，待 Git 提交和生产发布。
+- 状态：已发布，scheduler 保持停止。
 - 需求或问题：2026-08-02 的 `coeurdazur` 事故表明，业务日结束后两小时仅代表上游允许查询，不代表 Google Ad Manager 日报快照已经稳定；用户要求将自动尝试时间改为业务日结束后五小时。
 - 变更内容：将 `backend/app/collectors/service.py` 的 `MID_PLATFORM_DAILY_SAFETY_DELTA` 从两小时调整为五小时，并新增 `backend/tests/test_fetch_scheduler.py` 的时区边界回归测试。
 - 修改原因：避免 scheduler 或 OAuth 恢复流程在日报仍生成时过早写入局部快照，并降低下游把非最终数据当作权威日报的风险。
@@ -978,5 +978,5 @@ npm run build
 - 影响范围：影响调用 `is_authoritative_daily_ready` 的自动日报调度与 OAuth 恢复缺口判断；不影响小时任务、既有数据、数据库结构、认证、代理、对外 API 字段或当前 scheduler 的 inactive 状态。
 - 验证与测试：TDD 红灯已确认原两小时时间分别产生 UTC 18:00（上海）和 UTC 09:00（洛杉矶），与五小时要求不符；独立审阅发现 DST 边界缺陷后，新增洛杉矶 2026 年春季/秋季切换日红灯用例（原实现分别错误产生 UTC 12:00/13:00），修复后为 UTC 13:00/12:00。隔离工作区定向 `pytest tests/test_fetch_scheduler.py -q` 为 18 passed；完整 `pytest tests -q` 为 149 passed，只有既有依赖弃用警告；`git diff --check` 通过。未使用真实账号、代理或生产拉取。
 - 独立审阅：首轮独立审阅发现 DST P1，已按 TDD 修复；复审确认以 UTC 增加五个实际经过小时，春/秋 DST 边界可捕获原错误，且 scheduler 启停、迁移、错误处理和安全边界均未变更。复审无 P0/P1 阻塞；同时已采纳 P2 注释修正。
-- Git：分支 `codex/daily-maturity-window`，提交 `4175bdd`（本条随后随同提交号修订）；不包含任何密码、Token、OAuth 或代理凭据。
-- 发布与回滚：用户已授权生产发布，但发布前必须备份运行时受控文件和 SQLite 一致性副本、确认生产 scheduler 仍为 inactive，再以已提交版本进行最小同步和服务健康检查。回滚为恢复本次变更前的 `service.py` 并重启 `adx-control-plane`；不触碰数据库业务数据，也不启动 scheduler。
+- Git：分支 `codex/daily-maturity-window`，运行时代码提交 `4175bdd`，审阅与发布台账提交 `d25cdeb`；不包含任何密码、Token、OAuth 或代理凭据。
+- 发布与回滚：2026-08-05 已发布到生产服务器。发布前创建受限权限备份 `/srv/adx-account-isolated-collector/backups/20260805T123426Z-pre-daily-five-hour-window`，其中含原 `service.py`、运行环境文件副本、systemd unit 文本和 SQLite 一致性备份；仅同步已提交的 `service.py`，未修改数据库业务数据、OAuth、代理或 API 契约。发布后控制面 `/health` 返回 `{"status":"ok"}`，服务为 `active`，本地与生产 `service.py` SHA-256 一致，运行时确认等待量为 `5.0` 小时且洛杉矶春季 DST 边界为 `2026-03-08T13:00:00+00:00`。发布前发现 scheduler 意外处于 `active`，为阻止旧两小时规则继续创建任务已先停止；发布后保持 `inactive`。其 systemd 启动策略仍为 `enabled`，服务器重启时会自动启动，未在本次未经额外授权的范围内修改。回滚为恢复上述备份中的 `service.py` 并重启 `adx-control-plane`；不触碰数据库业务数据，也不启动 scheduler。
