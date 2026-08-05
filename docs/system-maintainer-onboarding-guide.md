@@ -1015,3 +1015,10 @@ npm run build
 - 回滚：撤销日报 schema 字段和日报维度专用响应转换即可；无需数据库或数据回滚。
 - 测试、审阅与 Git：TDD 红灯已确认五类接口缺字段；定向绿灯为 collector router `3 passed`、ingestion `1 passed`；完整回归为 backend `155 passed`、collector `89 passed`；`git diff --check` 通过（仅换行提示）。独立审阅首轮发现字段语义对旧写入路径作出过强保证的 1 个 P1，以及设计文档列表位置 1 个 P2；已统一收窄契约语义并修正文档结构，复审 P0/P1/P2 均为 0。提交号在提交后回填。
 - 发布状态：未部署；本次仅本地 `dev` 修复并提交 Git。
+
+#### 测试服务器部署结果
+
+- 2026-08-05 已将本地 `dev` 提交 `315bf67` 通过完整 Git bundle 快进部署到测试服务器的 `/srv/adx-mid-platform-dev`；部署前服务器为 `dev@ba1118a`，无已跟踪工作区改动，现有 `.env`、备份和虚拟环境均保留。
+- 更新期间仅暂停 `adx-cpatobe-dev-backend.service` 与 `adx-cpatobe-dev-scheduler.service`；服务器本机回归 backend `155 passed`、collector `89 passed` 后恢复服务。backend `/health` 返回 200，backend 与 scheduler 最终均为 `active`。
+- 使用测试环境既有 Operator 鉴权只读查询 cpatobe 的 `2026-08-04` 日报：账户日报 1 条、站点日报 4 条、Link 日报 4 条、账户日报维度 30 条、站点日报维度 110 条；五类响应全部逐行包含布尔值 `is_finalized=true`。
+- 本次未触发 Google 拉取、未修改数据库、调度配置、OAuth、代理或生产服务器。测试服务器代码回滚可将 `dev` 快退至部署前提交 `ba1118a` 后重启上述两个服务；执行回滚前仍须先备份并核对工作区。
