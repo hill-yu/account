@@ -991,3 +991,14 @@ npm run build
 - 独立审阅：用户明确授权阶段提交暂不作为最终审阅门禁；最终开发完成后统一独立审阅。当前 WIP 不具备发布资格。
 - Git：本地 `dev`，本条随 WIP 提交；提交号生成后在最终台账中回填。
 - 发布与回滚：未发布。阶段提交仅用于远端开发留档与隔离测试环境；禁止合并 `master`。
+
+### 2026-08-05 — 权威日报刷新与北京时间小时查询开发完成候选
+
+- 状态：本地实现和自动化回归完成，待 VPS 隔离验证与最终独立审阅；未合并 `master`、未部署生产。
+- 变更内容：权威日报组合批次原子替换；05/06/07 固定槽位与数据库唯一约束；晚槽位覆盖保护；合法零数据替换；服务端行数/哈希校验；旧完整 payload 清理；任务成功状态同事务提交；OAuth 恢复仅补小时缺口；新增人工权威日报刷新接口；六类小时查询统一按北京时间自然日映射 UTC 区间。
+- 修改原因：解决日报延迟或回滚时旧值永久保留、小时数据覆盖日报、UTC 跨日导致 `user_system` 查询为零，以及并发或迟到任务覆盖新版本的问题。
+- 实施方案：严格依据 `docs/superpowers/specs/2026-08-05-authoritative-daily-and-beijing-hourly-design.md`，在本地 `dev` 按 TDD 实现；不修改 `user_system`，对接说明见 `docs/authoritative-daily-and-beijing-hourly-api-guide.md`。
+- 结果与影响范围：影响 backend、collector、Alembic、日报任务和小时查询日期语义；现有日报读取契约保持兼容。未执行真实 Google 拉取，未修改生产配置、凭据、代理、数据库或调度。
+- 验证：backend `155 passed`；collector `89 passed`；Alembic 空 SQLite `upgrade -> downgrade 20260802_0014 -> upgrade head` 成功；`git diff --check` 通过（仅换行提示）。
+- 回滚：停止使用新接口，代码回退上一 `dev` 提交；仅在尚无依赖数据时将 Alembic 降至 `20260802_0014`。生产发布前另行准备数据库备份和灰度回滚方案。
+- 审阅、Git 与发布：最终独立审阅发现的“人工/自动日报活动任务竞态”和“历史 NULL 槽位迟到覆盖”两个 P1 已按 TDD 修复，复审无 P0/P1；提交号及 VPS 验证结果待回填；禁止合并 `master` 或部署生产。

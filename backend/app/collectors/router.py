@@ -186,6 +186,23 @@ def trigger_manual_fetch(
     )
 
 
+@router.post(
+    "/operator/accounts/{account_id}/authoritative-daily-refresh",
+    response_model=schemas.AuthoritativeDailyRefreshResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def trigger_authoritative_daily_refresh(
+    account_id: int,
+    payload: schemas.AuthoritativeDailyRefreshRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> schemas.AuthoritativeDailyRefreshResponse:
+    result = service.trigger_authoritative_daily_refresh(db, account_id=account_id, payload=payload)
+    if not result.created:
+        response.status_code = status.HTTP_200_OK
+    return result
+
+
 @router.post("/operator/hourly-backfill/targeted-recent", response_model=schemas.TargetedHourlyBackfillResponse)
 def trigger_targeted_recent_hourly_backfill(
     payload: schemas.TargetedHourlyBackfillRequest,

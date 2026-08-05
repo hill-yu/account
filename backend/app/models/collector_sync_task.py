@@ -25,6 +25,23 @@ class CollectorSyncTask(Base):
             sqlite_where=text("run_reason = 'oauth_recovery' AND status IN ('pending', 'in_progress')"),
             postgresql_where=text("run_reason = 'oauth_recovery' AND status IN ('pending', 'in_progress')"),
         ),
+        Index(
+            "uq_collector_sync_tasks_authoritative_slot",
+            "account_id",
+            "report_date",
+            "authoritative_slot",
+            unique=True,
+            sqlite_where=text("task_type = 'report_fetch' AND authoritative_slot IN (5, 6, 7)"),
+            postgresql_where=text("task_type = 'report_fetch' AND authoritative_slot IN (5, 6, 7)"),
+        ),
+        Index(
+            "uq_collector_sync_tasks_active_authoritative",
+            "account_id",
+            "report_date",
+            unique=True,
+            sqlite_where=text("task_type = 'report_fetch' AND authoritative_slot IN (5, 6, 7, 8) AND status IN ('pending', 'in_progress')"),
+            postgresql_where=text("task_type = 'report_fetch' AND authoritative_slot IN (5, 6, 7, 8) AND status IN ('pending', 'in_progress')"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

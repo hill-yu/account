@@ -1628,6 +1628,43 @@ def test_manual_fetch_returns_existing_hourly_sync_task_when_already_active(
     assert response.json()["hourly_sync_task_created"] is False
 
 
+def test_manual_authoritative_daily_refresh_is_idempotent_and_rejects_active_conflict(
+    client: TestClient,
+) -> None:
+    account = client.post(
+        "/api/v1/operator/accounts",
+        json={"name": "manual-daily", "external_account_id": "manual-daily", "status": "active"},
+    ).json()
+    instance = client.post(
+        "/api/v1/operator/instances",
+        json={
+            "account_id": account["id"],
+            "name": "manual-daily",
+            "instance_token": "manual-daily-token",
+            "status": "ready",
+        },
+    ).json()
+    path = f"/api/v1/operator/accounts/{account['id']}/authoritative-daily-refresh"
+    body = {"report_date": "2026-08-04", "idempotency_key": "operator-retry-1"}
+
+    created = client.post(path, json=body)
+    duplicate = client.post(path, json=body)
+
+    assert created.status_code == 201
+    assert created.json()["task_id"] == duplicate.json()["task_id"]
+    assert created.json()["collector_instance_id"] == instance["id"]
+    assert created.json()["authoritative_slot"] == 8
+    assert created.json()["created"] is True
+    assert duplicate.status_code == 200
+    assert duplicate.json()["created"] is False
+
+    conflict = client.post(
+        path,
+        json={"report_date": "2026-08-04", "idempotency_key": "operator-retry-2"},
+    )
+    assert conflict.status_code == 409
+
+
 def test_manual_fetch_reuses_existing_hourly_sync_task(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

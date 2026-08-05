@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+import hashlib
 import json
 from datetime import date, datetime
 from decimal import Decimal
@@ -82,6 +83,10 @@ def _seed_task(client: TestClient) -> tuple[int, str]:
         },
     )
     return create_task.json()["id"], "token-ingestion"
+
+
+def _hash_rows(rows: list[dict[str, object]]) -> str:
+    return hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def test_batch_ingestion_is_idempotent_by_task_and_batch_key(
@@ -548,31 +553,38 @@ def test_authoritative_daily_batch_replaces_core_and_dimension_in_one_request(
     test_client, session_factory = client
     task_id, token = _seed_task(test_client)
 
+    rows = [{
+        "core_rows": [{
+            "report_date": "2026-05-21", "url_id": "site-1", "url": "site-1",
+            "responses_served": 50, "requests": 60, "impressions": 40, "clicks": 2,
+            "revenue": "1.000000", "ecpm": "25.000000",
+        }],
+        "dimension_rows": [{
+            "report_date": "2026-05-21", "url_id": "site-1", "url": "site-1",
+            "ad_country_code": "US", "ad_country_name": "US", "ad_slot_id": "slot-1",
+            "ad_slot_name": "Top", "responses_served": 50, "requests": 60,
+            "impressions": 40, "clicks": 2, "revenue": "1.000000", "ecpm": "25.000000",
+        }],
+    }]
     response = test_client.post(
         f"/api/v1/collector/tasks/{task_id}/batches",
         headers={"Authorization": f"Bearer {token}"},
         json={
             "batch_key": "authoritative-snapshot",
             "row_count": 2,
-            "payload_hash": "authoritative-hash",
+            "payload_hash": _hash_rows(rows),
             "schema_version": "admanager_authoritative_daily_v1",
-            "rows": [{
-                "core_rows": [{
-                    "report_date": "2026-05-21", "url_id": "site-1", "url": "site-1",
-                    "responses_served": 50, "requests": 60, "impressions": 40, "clicks": 2,
-                    "revenue": "1.000000", "ecpm": "25.000000",
-                }],
-                "dimension_rows": [{
-                    "report_date": "2026-05-21", "url_id": "site-1", "url": "site-1",
-                    "ad_country_code": "US", "ad_country_name": "US", "ad_slot_id": "slot-1",
-                    "ad_slot_name": "Top", "responses_served": 50, "requests": 60,
-                    "impressions": 40, "clicks": 2, "revenue": "1.000000", "ecpm": "25.000000",
-                }],
-            }],
+            "rows": rows,
         },
     )
 
     assert response.status_code == 201
+    repeated_status = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/status",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"status": "succeeded", "message": "uploaded authoritative snapshot"},
+    )
+    assert repeated_status.status_code == 200
     with session_factory() as session:
         assert session.scalar(select(AccountDailyReport)).requests == 60
         assert session.scalar(select(SiteDailyReport)).url_id == "site-1"
@@ -581,7 +593,79 @@ def test_authoritative_daily_batch_replaces_core_and_dimension_in_one_request(
         assert summary.task_id == task_id
         assert summary.requests == 60
         assert summary.row_count == 2
-        assert summary.payload_hash == "authoritative-hash"
+        assert summary.payload_hash == _hash_rows(rows)
+        assert session.get(_models.CollectorSyncTask, task_id).status == "succeeded"
+
+
+def test_complete_zero_authoritative_snapshot_clears_existing_daily_reports(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    task_id, token = _seed_task(test_client)
+    with session_factory() as session:
+        session.add(SiteDailyReport(account_id=1, report_date=date(2026, 5, 21), url_id="old", url="old", responses_served=1, requests=1, impressions=1, clicks=0, revenue=0, ecpm=0))
+        session.add(AccountDailyReport(account_id=1, report_date=date(2026, 5, 21), responses_served=1, requests=1, impressions=1, clicks=0, revenue=0, ecpm=0))
+        session.commit()
+    rows = [{"core_rows": [], "dimension_rows": []}]
+
+    response = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"batch_key": "zero", "row_count": 0, "payload_hash": _hash_rows(rows), "schema_version": "admanager_authoritative_daily_v1", "rows": rows},
+    )
+
+    assert response.status_code == 201
+    with session_factory() as session:
+        assert session.scalar(select(SiteDailyReport)) is None
+        assert session.scalar(select(AccountDailyReport)) is None
+
+
+def test_authoritative_snapshot_rejects_false_row_count_and_hash(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, _ = client
+    task_id, token = _seed_task(test_client)
+    rows = [{"core_rows": [], "dimension_rows": []}]
+
+    response = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"batch_key": "invalid", "row_count": 1, "payload_hash": "false", "schema_version": "admanager_authoritative_daily_v1", "rows": rows},
+    )
+
+    assert response.status_code == 422
+
+
+def test_new_authoritative_version_clears_previous_full_payload(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    first_task_id, token = _seed_task(test_client)
+    first_rows = [{"core_rows": [], "dimension_rows": []}]
+    assert test_client.post(
+        f"/api/v1/collector/tasks/{first_task_id}/batches",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"batch_key": "first", "row_count": 0, "payload_hash": _hash_rows(first_rows), "schema_version": "admanager_authoritative_daily_v1", "rows": first_rows},
+    ).status_code == 201
+    with session_factory() as session:
+        second = _models.CollectorSyncTask(
+            account_id=1, collector_instance_id=1, task_type="report_fetch",
+            report_date=date(2026, 5, 21), status="pending", authoritative_slot=8,
+            external_request_id="second-authoritative-version",
+        )
+        session.add(second)
+        session.commit()
+        second_task_id = second.id
+    assert test_client.post(
+        f"/api/v1/collector/tasks/{second_task_id}/batches",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"batch_key": "second", "row_count": 0, "payload_hash": _hash_rows(first_rows), "schema_version": "admanager_authoritative_daily_v1", "rows": first_rows},
+    ).status_code == 201
+
+    with session_factory() as session:
+        batches = session.scalars(select(CollectorIngestionBatch).order_by(CollectorIngestionBatch.id)).all()
+        assert batches[0].payload_json is None
+        assert batches[1].payload_json is not None
 
 
 def test_earlier_authoritative_slot_cannot_overwrite_later_published_slot(
@@ -605,14 +689,45 @@ def test_earlier_authoritative_slot_cannot_overwrite_later_published_slot(
         ))
         session.commit()
 
+    late_rows = [{"core_rows": [], "dimension_rows": []}]
     response = test_client.post(
         f"/api/v1/collector/tasks/{early_task_id}/batches",
         headers={"Authorization": f"Bearer {token}"},
         json={
-            "batch_key": "late-slot-5", "row_count": 0, "payload_hash": "late",
+            "batch_key": "late-slot-5", "row_count": 0, "payload_hash": _hash_rows(late_rows),
             "schema_version": "admanager_authoritative_daily_v1",
-            "rows": [{"core_rows": [], "dimension_rows": []}],
+            "rows": late_rows,
         },
+    )
+
+    assert response.status_code == 409
+
+
+def test_legacy_null_slot_cannot_overwrite_later_published_slot(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    legacy_task_id, token = _seed_task(test_client)
+    with session_factory() as session:
+        later = _models.CollectorSyncTask(
+            account_id=1, collector_instance_id=1, task_type="report_fetch",
+            report_date=date(2026, 5, 21), status="succeeded", authoritative_slot=7,
+            external_request_id="published-slot-7-before-legacy",
+        )
+        session.add(later)
+        session.flush()
+        session.add(AuthoritativeDailyVersionSummary(
+            task_id=later.id, account_id=1, report_date=date(2026, 5, 21), slot=7,
+            responses_served=70, requests=70, impressions=70, clicks=7,
+            revenue=Decimal("7"), row_count=1, payload_hash="later",
+        ))
+        session.commit()
+    rows = [{"core_rows": [], "dimension_rows": []}]
+
+    response = test_client.post(
+        f"/api/v1/collector/tasks/{legacy_task_id}/batches",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"batch_key": "legacy-null", "row_count": 0, "payload_hash": _hash_rows(rows), "schema_version": "admanager_authoritative_daily_v1", "rows": rows},
     )
 
     assert response.status_code == 409

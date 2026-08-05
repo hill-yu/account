@@ -149,7 +149,7 @@ def test_complete_hourly_and_authoritative_dates_create_no_recovery_gap(session_
         assert task is None
 
 
-def test_missing_hourly_gap_is_prioritized_before_mature_authoritative_daily(session_factory) -> None:
+def test_oauth_recovery_only_backfills_hourly_gaps_not_authoritative_daily(session_factory) -> None:
     now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
     with session_factory() as db:
         account, instance = _seed_recovery_account(db, name="priority")
@@ -162,9 +162,8 @@ def test_missing_hourly_gap_is_prioritized_before_mature_authoritative_daily(ses
 
         gaps = service.scan_oauth_recovery_gaps(db, now=now, lookback_days=3)
 
-        assert [(gap.task_type, gap.report_date) for gap in gaps[:2]] == [
+        assert [(gap.task_type, gap.report_date) for gap in gaps] == [
             ("report_fetch_hourly", date(2026, 7, 29)),
-            ("report_fetch", date(2026, 7, 28)),
         ]
 
 

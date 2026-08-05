@@ -103,6 +103,21 @@ def test_daily_dimension_report_tables_have_full_dimension_unique_keys() -> None
     }
 
 
+def test_authoritative_automatic_slots_have_database_unique_index() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    indexes = inspect(engine).get_indexes("collector_sync_tasks")
+
+    slot_index = next(index for index in indexes if index["name"] == "uq_collector_sync_tasks_authoritative_slot")
+    assert slot_index["unique"] == 1
+    assert slot_index["column_names"] == ["account_id", "report_date", "authoritative_slot"]
+
+    active_index = next(index for index in indexes if index["name"] == "uq_collector_sync_tasks_active_authoritative")
+    assert active_index["unique"] == 1
+    assert active_index["column_names"] == ["account_id", "report_date"]
+
+
 def test_healthcheck_returns_ok() -> None:
     client = TestClient(create_app())
     response = client.get("/health")

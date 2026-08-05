@@ -345,6 +345,22 @@ class ManualFetchResponse(BaseModel):
     hourly_sync_task_created: bool = False
 
 
+class AuthoritativeDailyRefreshRequest(BaseModel):
+    report_date: date
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class AuthoritativeDailyRefreshResponse(BaseModel):
+    task_id: int
+    account_id: int
+    collector_instance_id: int
+    report_date: date
+    status: str
+    authoritative_slot: int
+    external_request_id: str
+    created: bool
+
+
 class HourlyCoverage(BaseModel):
     account_id: int
     report_date: date

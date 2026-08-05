@@ -17,6 +17,22 @@ depends_on = None
 
 def upgrade() -> None:
     op.add_column("collector_sync_tasks", sa.Column("authoritative_slot", sa.Integer(), nullable=True))
+    op.create_index(
+        "uq_collector_sync_tasks_authoritative_slot",
+        "collector_sync_tasks",
+        ["account_id", "report_date", "authoritative_slot"],
+        unique=True,
+        sqlite_where=sa.text("task_type = 'report_fetch' AND authoritative_slot IN (5, 6, 7)"),
+        postgresql_where=sa.text("task_type = 'report_fetch' AND authoritative_slot IN (5, 6, 7)"),
+    )
+    op.create_index(
+        "uq_collector_sync_tasks_active_authoritative",
+        "collector_sync_tasks",
+        ["account_id", "report_date"],
+        unique=True,
+        sqlite_where=sa.text("task_type = 'report_fetch' AND authoritative_slot IN (5, 6, 7, 8) AND status IN ('pending', 'in_progress')"),
+        postgresql_where=sa.text("task_type = 'report_fetch' AND authoritative_slot IN (5, 6, 7, 8) AND status IN ('pending', 'in_progress')"),
+    )
     op.create_table(
         "authoritative_daily_version_summaries",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -42,4 +58,6 @@ def downgrade() -> None:
     op.drop_index("ix_authoritative_daily_version_summaries_report_date", table_name="authoritative_daily_version_summaries")
     op.drop_index("ix_authoritative_daily_version_summaries_account_id", table_name="authoritative_daily_version_summaries")
     op.drop_table("authoritative_daily_version_summaries")
+    op.drop_index("uq_collector_sync_tasks_active_authoritative", table_name="collector_sync_tasks")
+    op.drop_index("uq_collector_sync_tasks_authoritative_slot", table_name="collector_sync_tasks")
     op.drop_column("collector_sync_tasks", "authoritative_slot")

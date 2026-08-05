@@ -381,7 +381,6 @@ def scan_oauth_recovery_gaps(
         .order_by(Account.id)
     ).all()
     hourly_gaps: list[OAuthRecoveryGap] = []
-    daily_gaps: list[OAuthRecoveryGap] = []
     for account, instance, policy, _oauth_app in rows:
         timezone_name = account.timezone or DEFAULT_REPORT_TIMEZONE
         local_date = current_now.astimezone(ZoneInfo(timezone_name)).date()
@@ -424,33 +423,7 @@ def scan_oauth_recovery_gaps(
                     )
                 )
 
-        if policy.authoritative_daily_enabled:
-            for report_date in candidate_dates:
-                if not is_authoritative_daily_ready(
-                    report_date=report_date,
-                    timezone_name=timezone_name,
-                    now=current_now,
-                ):
-                    continue
-                if has_successful_authoritative_daily_fetch(db, account_id=account.id, report_date=report_date):
-                    continue
-                if _gap_task_exists(
-                    db,
-                    account_id=account.id,
-                    task_type="report_fetch",
-                    report_date=report_date,
-                ):
-                    continue
-                daily_gaps.append(
-                    OAuthRecoveryGap(
-                        account_id=account.id,
-                        collector_instance_id=instance.id,
-                        task_type="report_fetch",
-                        report_date=report_date,
-                        reason="authoritative_daily_missing",
-                    )
-                )
-    return hourly_gaps + daily_gaps
+    return hourly_gaps
 
 
 def enqueue_next_oauth_recovery_gap(
@@ -1596,6 +1569,61 @@ def _beijing_date_range_utc(start_date: date, end_date: date) -> tuple[datetime,
     return (
         local_start.astimezone(timezone.utc).replace(tzinfo=None),
         local_end.astimezone(timezone.utc).replace(tzinfo=None),
+    )
+
+
+def trigger_authoritative_daily_refresh(
+    db: Session,
+    *,
+    account_id: int,
+    payload: schemas.AuthoritativeDailyRefreshRequest,
+) -> schemas.AuthoritativeDailyRefreshResponse:
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+    instance = db.scalar(
+        select(CollectorInstance).where(
+            CollectorInstance.account_id == account_id,
+            CollectorInstance.status == "ready",
+        )
+    )
+    if instance is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ready collector instance not found")
+
+    external_request_id = (
+        f"authoritative-refresh-{account_id}-{payload.report_date.isoformat()}-{payload.idempotency_key}"
+    )
+    existing = db.scalar(
+        select(CollectorSyncTask).where(CollectorSyncTask.external_request_id == external_request_id)
+    )
+    created = False
+    if existing is None:
+        if _find_active_daily_sync_task(db, account_id=account_id, report_date=payload.report_date) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Daily sync task already active for this account and report date",
+            )
+        existing = _create_daily_sync_task(
+            db,
+            account_id=account_id,
+            collector_instance_id=instance.id,
+            report_date=payload.report_date,
+            authoritative_slot=8,
+            external_request_id=external_request_id,
+        )
+        existing.run_reason = "manual_authoritative"
+        db.commit()
+        db.refresh(existing)
+        created = True
+    return schemas.AuthoritativeDailyRefreshResponse(
+        task_id=existing.id,
+        account_id=existing.account_id,
+        collector_instance_id=existing.collector_instance_id,
+        report_date=existing.report_date,
+        status=existing.status,
+        authoritative_slot=8,
+        external_request_id=external_request_id,
+        created=created,
     )
 
 
@@ -3007,6 +3035,8 @@ def update_task_status(
         task=task_before_update,
         supplied_version=payload.credential_version,
     )
+    if task_before_update.status == payload.status:
+        return task_before_update
     # 反向查询：当前允许的源状态
     source_statuses = allowed_source_statuses(payload.status)
     if not source_statuses:
