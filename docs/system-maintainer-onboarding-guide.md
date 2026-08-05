@@ -1001,4 +1001,4 @@ npm run build
 - 结果与影响范围：影响 backend、collector、Alembic、日报任务和小时查询日期语义；现有日报读取契约保持兼容。未执行真实 Google 拉取，未修改生产配置、凭据、代理、数据库或调度。
 - 验证：backend `155 passed`；collector `89 passed`；Alembic 空 SQLite `upgrade -> downgrade 20260802_0014 -> upgrade head` 成功；`git diff --check` 通过（仅换行提示）。
 - 回滚：停止使用新接口，代码回退上一 `dev` 提交；仅在尚无依赖数据时将 Alembic 降至 `20260802_0014`。生产发布前另行准备数据库备份和灰度回滚方案。
-- 审阅、Git 与发布：最终独立审阅发现的“人工/自动日报活动任务竞态”和“历史 NULL 槽位迟到覆盖”两个 P1 已按 TDD 修复，复审无 P0/P1；提交号及 VPS 验证结果待回填；禁止合并 `master` 或部署生产。
+- 审阅、Git 与发布：最终独立审阅发现的“人工/自动日报活动任务竞态”和“历史 NULL 槽位迟到覆盖”两个 P1 已按 TDD 修复，复审无 P0/P1。功能提交为 `277aaa0`；VPS 隔离仓库 `/srv/adx-mid-platform-dev` 已验证 backend `155 passed`、collector `89 passed`、迁移往返成功，人工刷新接口 1 项及日报/北京时间集成测试 7 项通过。因本机到 GitHub 443 不通且 VPS 无写凭据，远端 `origin/dev` 暂仍为 `54711dc`，VPS 通过只含该提交的 Git bundle 快进到 `277aaa0`；未合并 `master`、未部署生产。
