@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -442,6 +442,36 @@ def test_scheduler_skips_accounts_marked_as_do_not_fetch(
         )
 
     assert tasks == []
+
+
+@pytest.mark.parametrize(
+    ("report_date", "timezone_name", "expected_ready_at"),
+    [
+        (date(2026, 8, 4), "Asia/Shanghai", datetime(2026, 8, 4, 21, 0, tzinfo=UTC)),
+        (date(2026, 8, 4), "America/Los_Angeles", datetime(2026, 8, 5, 12, 0, tzinfo=UTC)),
+        (date(2026, 3, 7), "America/Los_Angeles", datetime(2026, 3, 8, 13, 0, tzinfo=UTC)),
+        (date(2026, 10, 31), "America/Los_Angeles", datetime(2026, 11, 1, 12, 0, tzinfo=UTC)),
+    ],
+)
+def test_authoritative_daily_ready_at_waits_five_hours_after_business_day_end(
+    report_date: date,
+    timezone_name: str,
+    expected_ready_at: datetime,
+) -> None:
+    assert collectors_service.authoritative_daily_ready_at(
+        report_date=report_date,
+        timezone_name=timezone_name,
+    ) == expected_ready_at
+    assert not collectors_service.is_authoritative_daily_ready(
+        report_date=report_date,
+        timezone_name=timezone_name,
+        now=expected_ready_at - timedelta(minutes=1),
+    )
+    assert collectors_service.is_authoritative_daily_ready(
+        report_date=report_date,
+        timezone_name=timezone_name,
+        now=expected_ready_at,
+    )
 
 
 def _as_utc(value: datetime | None) -> datetime | None:

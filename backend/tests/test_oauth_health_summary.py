@@ -174,7 +174,8 @@ def test_oauth_health_summary_returns_local_aggregates_without_secrets(client: T
     assert payload["revoked_account_task_created_total"] == 1
     healthy_lag = next(item for item in payload["account_lags"] if item["account_name"] == "healthy.com")
     assert healthy_lag["hourly_watermark_lag_hours"] == 7.0
-    assert healthy_lag["authoritative_daily_lag_hours"] == 10.0
+    # 权威日报滞后从业务日结束后五小时开始计算，不把稳定等待窗口计为滞后。
+    assert healthy_lag["authoritative_daily_lag_hours"] == 7.0
     serialized = response.text
     assert "cipher-client" not in serialized
     assert "cipher-refresh" not in serialized

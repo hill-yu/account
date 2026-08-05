@@ -100,9 +100,9 @@ SAFE_OAUTH_FAILURE_CLASSES = {
 DEFAULT_REPORT_TIMEZONE = "America/Los_Angeles"
 
 # 日报数据的"安全等待时间"
-# 含义：等到报告日期的次日凌晨后，再多等 2 小时，确保数据已完整生成
-# 例如 7月20号的日报，要等到 7月21号凌晨 2:00（洛杉矶时间）才算"权威可用"
-MID_PLATFORM_DAILY_SAFETY_DELTA = timedelta(hours=2)
+# 含义：等到报告日期的次日凌晨后，再多等 5 小时，降低上游仍在生成日报快照的风险。
+# 例如 7月20号的日报，要等到 7月21号凌晨 5:00（洛杉矶时间）才算"权威可用"。
+MID_PLATFORM_DAILY_SAFETY_DELTA = timedelta(hours=5)
 
 # 需要定向回填（targeted backfill）的账号 key 列表
 # 这些账号会被定时调度自动进行小时数据回填
@@ -239,15 +239,14 @@ def authoritative_daily_ready_at(*, report_date: date, timezone_name: str) -> da
 
     逻辑：
     1. 取报告日期次日凌晨 0:00（指定时区）
-    2. 加上安全等待时间（MID_PLATFORM_DAILY_SAFETY_DELTA = 2小时）
-    3. 转为 UTC 时间返回
+    2. 转为 UTC 时间
+    3. 加上安全等待时间（MID_PLATFORM_DAILY_SAFETY_DELTA = 5小时），保证经过时间不受 DST 切换影响
 
-    例如：7月20号的日报，洛杉矶时区 → 7月21号 2:00 AM PT → UTC 7月21号 9:00 AM
+    例如：7月20号的日报，洛杉矶时区 → 7月21号 5:00 AM PT → UTC 7月21号 12:00 PM
     """
     zone = ZoneInfo(timezone_name or DEFAULT_REPORT_TIMEZONE)
-    local_ready_at = datetime.combine(report_date + timedelta(days=1), datetime.min.time(), tzinfo=zone)
-    local_ready_at += MID_PLATFORM_DAILY_SAFETY_DELTA
-    return local_ready_at.astimezone(timezone.utc)
+    local_business_day_end = datetime.combine(report_date + timedelta(days=1), datetime.min.time(), tzinfo=zone)
+    return local_business_day_end.astimezone(timezone.utc) + MID_PLATFORM_DAILY_SAFETY_DELTA
 
 
 def is_authoritative_daily_ready(
