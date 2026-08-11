@@ -1005,5 +1005,5 @@ npm run build
 - 影响范围：`backend/app/config.py`、`backend/app/collectors/scheduler.py`、`backend/app/collectors/service.py`、scheduler 测试及运维文档；无数据库迁移、无 API 字段变化、无 OAuth/代理变化。
 - 验证与测试：TDD 首个用例在旧实现上失败、最小实现后通过；独立审阅提出的非 direct 门禁与重试耗尽记录均先以失败测试复现、修复后通过。后端全量测试 `164 passed`，`compileall` 与 `git diff --check` 通过；未使用真实账号、代理或生产拉取。
 - 独立审阅：首轮发现两个 P1：非 direct 远端调用不能可靠限制两次、重试耗尽会静默。已按最小范围增加 direct-only 门禁与幂等耗尽记录；复审确认两个 P1 均关闭，无 P0/P1，可提交并仅在确认 `direct_collector_only=true` 后对 `coeurdazur` 单节点灰度。剩余 P2 为双 scheduler 并发创建耗尽标记时竞争进程可能收到唯一键冲突（当前生产仅单 scheduler），以及尚未单列 spring-forward 测试，不阻塞本次单节点灰度。
-- Git：分支 `codex/cross-day-hourly-finalize`；设计/计划提交 `e3afbd1`，运行代码提交待审阅后补充。
+- Git：分支 `codex/cross-day-hourly-finalize`；设计/计划提交 `e3afbd1`，代码、测试、问题记录与初始运维台账提交 `3546895`；不包含密码、Token、OAuth、代理凭据或生产数据。
 - 发布与回滚：计划仅在 `coeurdazur` 灰度两个 Pacific 跨日周期；回滚先清空 `ADX_COLLECTOR_CROSS_DAY_FINALIZE_ACCOUNT_KEYS`，再恢复上一 Git 版本并重启 scheduler，定向取消该账号未执行的最终刷新任务。
