@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -172,6 +173,451 @@ def test_scheduler_triggers_due_schedule_and_updates_state(
         assert updated.last_trigger_message == "queued"
         assert _as_utc(updated.last_triggered_at) == datetime(2026, 6, 23, 8, 0, tzinfo=UTC)
         assert _as_utc(updated.next_run_at) == datetime(2026, 6, 23, 9, 0, tzinfo=UTC)
+
+
+def test_scheduler_uses_previous_pacific_date_for_first_cross_day_finalization(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "cross_day_finalize_account_keys", "coeurdazur")
+    monkeypatch.setattr(settings, "direct_collector_only", True)
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name="coeurdazur.com",
+        instance_name="coeurdazur-instance",
+        report_account_key="coeurdazur",
+    )
+    with session_factory() as session:
+        session.add(
+            FetchSchedule(
+                account_id=account_id,
+                collector_instance_id=instance_id,
+                enabled=True,
+                mode="interval_hours",
+                interval_hours=1,
+                timezone="America/Los_Angeles",
+                next_run_at=datetime(2026, 8, 11, 8, 21, tzinfo=UTC),
+            )
+        )
+        session.commit()
+
+    captured: dict[str, object] = {}
+
+    def fake_trigger(db: Session, payload, **kwargs):
+        captured["report_date"] = payload.report_date
+        captured.update(kwargs)
+        return collector_schemas.ManualFetchResponse(ok=True, status="pending")
+
+    scheduler = FetchScheduler(
+        session_factory=session_factory,
+        trigger_manual_fetch=fake_trigger,
+        now_provider=lambda: datetime(2026, 8, 11, 8, 21, tzinfo=UTC),
+    )
+
+    scheduler.run_pending_once()
+
+    assert captured["report_date"] == date(2026, 8, 10)
+    assert captured["run_reason"] == "cross_day_finalize"
+    assert captured["external_request_id"] == f"hourly-finalize-{account_id}-2026-08-10-1"
+
+
+@pytest.mark.parametrize(
+    ("attempt_statuses", "expected_date", "expected_reason", "expected_attempt"),
+    [
+        (["succeeded"], date(2026, 8, 11), "preview", None),
+        (["pending"], date(2026, 8, 10), "cross_day_finalize", 1),
+        (["blocked"], date(2026, 8, 11), "preview", None),
+        (["failed"], date(2026, 8, 10), "cross_day_finalize", 2),
+        (["cancelled"], date(2026, 8, 10), "cross_day_finalize", 2),
+        (["failed", "failed"], date(2026, 8, 11), "preview", None),
+    ],
+)
+def test_scheduler_cross_day_finalization_is_idempotent_and_bounded(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    attempt_statuses: list[str],
+    expected_date: date,
+    expected_reason: str,
+    expected_attempt: int | None,
+) -> None:
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "cross_day_finalize_account_keys", "coeurdazur")
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name="bounded-account",
+        instance_name="bounded-instance",
+        report_account_key="coeurdazur",
+    )
+    with session_factory() as session:
+        session.add(
+            FetchSchedule(
+                account_id=account_id,
+                collector_instance_id=instance_id,
+                enabled=True,
+                mode="interval_hours",
+                interval_hours=1,
+                timezone="America/Los_Angeles",
+                next_run_at=datetime(2026, 8, 11, 9, 21, tzinfo=UTC),
+            )
+        )
+        for attempt, status_value in enumerate(attempt_statuses, start=1):
+            session.add(
+                CollectorSyncTask(
+                    account_id=account_id,
+                    collector_instance_id=instance_id,
+                    task_type="report_fetch_hourly",
+                    run_reason="cross_day_finalize",
+                    report_date=date(2026, 8, 10),
+                    status=status_value,
+                    external_request_id=f"existing-finalize-{account_id}-{attempt}",
+                )
+            )
+        session.commit()
+
+    captured: dict[str, object] = {}
+
+    def fake_trigger(db: Session, payload, **kwargs):
+        captured["report_date"] = payload.report_date
+        captured.update(kwargs)
+        return collector_schemas.ManualFetchResponse(ok=True, status="pending")
+
+    FetchScheduler(
+        session_factory=session_factory,
+        trigger_manual_fetch=fake_trigger,
+        now_provider=lambda: datetime(2026, 8, 11, 9, 21, tzinfo=UTC),
+    ).run_pending_once()
+
+    assert captured["report_date"] == expected_date
+    assert captured.get("run_reason", "preview") == expected_reason
+    if expected_attempt is None:
+        assert captured.get("external_request_id") is None
+    else:
+        assert captured["external_request_id"] == (
+            f"hourly-finalize-{account_id}-2026-08-10-{expected_attempt}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("now", "enabled_keys"),
+    [
+        (datetime(2026, 8, 11, 7, 21, tzinfo=UTC), "coeurdazur"),
+        (datetime(2026, 8, 11, 10, 21, tzinfo=UTC), "coeurdazur"),
+        (datetime(2026, 8, 11, 8, 21, tzinfo=UTC), ""),
+    ],
+)
+def test_scheduler_does_not_finalize_outside_window_or_feature_scope(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    now: datetime,
+    enabled_keys: str,
+) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "cross_day_finalize_account_keys", enabled_keys)
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name=f"window-account-{now.hour}-{len(enabled_keys)}",
+        instance_name=f"window-instance-{now.hour}-{len(enabled_keys)}",
+        report_account_key="coeurdazur",
+    )
+    with session_factory() as session:
+        session.add(
+            FetchSchedule(
+                account_id=account_id,
+                collector_instance_id=instance_id,
+                enabled=True,
+                mode="interval_hours",
+                interval_hours=1,
+                timezone="America/Los_Angeles",
+                next_run_at=now,
+            )
+        )
+        session.commit()
+
+    captured: dict[str, object] = {}
+
+    def fake_trigger(db: Session, payload, **kwargs):
+        captured["report_date"] = payload.report_date
+        captured.update(kwargs)
+        return collector_schemas.ManualFetchResponse(ok=True, status="pending")
+
+    FetchScheduler(
+        session_factory=session_factory,
+        trigger_manual_fetch=fake_trigger,
+        now_provider=lambda: now,
+    ).run_pending_once()
+
+    assert captured["report_date"] == now.astimezone(ZoneInfo("America/Los_Angeles")).date()
+    assert captured.get("run_reason", "preview") == "preview"
+    assert captured.get("external_request_id") is None
+
+
+def test_scheduler_does_not_finalize_when_direct_collector_mode_is_disabled(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "cross_day_finalize_account_keys", "coeurdazur")
+    monkeypatch.setattr(settings, "direct_collector_only", False)
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name="remote-account",
+        instance_name="remote-instance",
+        report_account_key="coeurdazur",
+    )
+    now = datetime(2026, 8, 11, 9, 21, tzinfo=UTC)
+    with session_factory() as session:
+        session.add(
+            FetchSchedule(
+                account_id=account_id,
+                collector_instance_id=instance_id,
+                enabled=True,
+                mode="interval_hours",
+                interval_hours=1,
+                timezone="America/Los_Angeles",
+                next_run_at=now,
+            )
+        )
+        session.commit()
+
+    captured: dict[str, object] = {}
+
+    def fake_trigger(db: Session, payload, **kwargs):
+        captured["report_date"] = payload.report_date
+        captured.update(kwargs)
+        return collector_schemas.ManualFetchResponse(ok=True, status="pending")
+
+    FetchScheduler(
+        session_factory=session_factory,
+        trigger_manual_fetch=fake_trigger,
+        now_provider=lambda: now,
+    ).run_pending_once()
+
+    assert captured["report_date"] == date(2026, 8, 11)
+    assert captured.get("run_reason", "preview") == "preview"
+    assert captured["direct_collector_only"] is False
+
+
+def test_scheduler_records_one_exhausted_marker_after_two_failed_attempts(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "cross_day_finalize_account_keys", "coeurdazur")
+    monkeypatch.setattr(settings, "direct_collector_only", True)
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name="exhausted-account",
+        instance_name="exhausted-instance",
+        report_account_key="coeurdazur",
+    )
+    now = datetime(2026, 8, 11, 9, 21, tzinfo=UTC)
+    with session_factory() as session:
+        session.add(
+            FetchSchedule(
+                account_id=account_id,
+                collector_instance_id=instance_id,
+                enabled=True,
+                mode="interval_hours",
+                interval_hours=1,
+                timezone="America/Los_Angeles",
+                next_run_at=now,
+            )
+        )
+        for attempt in (1, 2):
+            session.add(
+                CollectorSyncTask(
+                    account_id=account_id,
+                    collector_instance_id=instance_id,
+                    task_type="report_fetch_hourly",
+                    run_reason="cross_day_finalize",
+                    report_date=date(2026, 8, 10),
+                    status="failed",
+                    external_request_id=f"hourly-finalize-{account_id}-2026-08-10-{attempt}",
+                )
+            )
+        session.commit()
+
+    def fake_trigger(db: Session, payload, **kwargs):
+        return collector_schemas.ManualFetchResponse(ok=True, status="pending")
+
+    scheduler = FetchScheduler(
+        session_factory=session_factory,
+        trigger_manual_fetch=fake_trigger,
+        now_provider=lambda: now,
+    )
+    scheduler.run_pending_once()
+    with session_factory() as session:
+        schedule = session.query(FetchSchedule).filter_by(account_id=account_id).one()
+        schedule.next_run_at = now
+        session.commit()
+    scheduler.run_pending_once()
+
+    with session_factory() as session:
+        markers = list(
+            session.scalars(
+                select(CollectorSyncTask).where(
+                    CollectorSyncTask.account_id == account_id,
+                    CollectorSyncTask.report_date == date(2026, 8, 10),
+                    CollectorSyncTask.run_reason == "cross_day_finalize_exhausted",
+                )
+            )
+        )
+    assert len(markers) == 1
+    assert markers[0].status == "blocked"
+    assert markers[0].external_request_id == f"hourly-finalize-{account_id}-2026-08-10-exhausted"
+
+
+def test_scheduler_persists_cross_day_finalize_reason_and_deterministic_request_id(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "cross_day_finalize_account_keys", "coeurdazur")
+    monkeypatch.setattr(settings, "direct_collector_only", True)
+    monkeypatch.setattr("app.collectors.service._launch_hourly_sync_runtime", lambda instance: None)
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name="persist-account",
+        instance_name="persist-instance",
+        report_account_key="coeurdazur",
+    )
+    with session_factory() as session:
+        session.add(
+            FetchSchedule(
+                account_id=account_id,
+                collector_instance_id=instance_id,
+                enabled=True,
+                mode="interval_hours",
+                interval_hours=1,
+                timezone="America/Los_Angeles",
+                next_run_at=datetime(2026, 8, 11, 8, 21, tzinfo=UTC),
+            )
+        )
+        session.commit()
+
+    FetchScheduler(
+        session_factory=session_factory,
+        now_provider=lambda: datetime(2026, 8, 11, 8, 21, tzinfo=UTC),
+    ).run_pending_once()
+
+    with session_factory() as session:
+        task = session.scalar(
+            select(CollectorSyncTask).where(CollectorSyncTask.run_reason == "cross_day_finalize")
+        )
+        assert task is not None
+        assert task.report_date == date(2026, 8, 10)
+        assert task.external_request_id == f"hourly-finalize-{account_id}-2026-08-10-1"
+
+
+def test_scheduler_cross_day_finalization_uses_zoneinfo_across_dst_fallback(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "cross_day_finalize_account_keys", " coeurdazur , other ")
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name="dst-account",
+        instance_name="dst-instance",
+        report_account_key="coeurdazur",
+    )
+    now = datetime(2026, 11, 1, 9, 30, tzinfo=UTC)
+    with session_factory() as session:
+        session.add(
+            FetchSchedule(
+                account_id=account_id,
+                collector_instance_id=instance_id,
+                enabled=True,
+                mode="interval_hours",
+                interval_hours=1,
+                timezone="America/Los_Angeles",
+                next_run_at=now,
+            )
+        )
+        session.commit()
+
+    captured: dict[str, object] = {}
+
+    def fake_trigger(db: Session, payload, **kwargs):
+        captured["report_date"] = payload.report_date
+        captured.update(kwargs)
+        return collector_schemas.ManualFetchResponse(ok=True, status="pending")
+
+    FetchScheduler(
+        session_factory=session_factory,
+        trigger_manual_fetch=fake_trigger,
+        now_provider=lambda: now,
+    ).run_pending_once()
+
+    assert now.astimezone(ZoneInfo("America/Los_Angeles")).hour == 1
+    assert captured["report_date"] == date(2026, 10, 31)
+    assert captured["run_reason"] == "cross_day_finalize"
+
+
+def test_scheduler_cross_day_finalization_uses_source_timezone_when_schedule_timezone_is_wrong(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "cross_day_finalize_account_keys", "coeurdazur")
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name="source-zone-account",
+        instance_name="source-zone-instance",
+        report_account_key="coeurdazur",
+    )
+    now = datetime(2026, 8, 11, 8, 21, tzinfo=UTC)
+    with session_factory() as session:
+        session.add(
+            FetchSchedule(
+                account_id=account_id,
+                collector_instance_id=instance_id,
+                enabled=True,
+                mode="interval_hours",
+                interval_hours=1,
+                timezone="Asia/Hong_Kong",
+                next_run_at=now,
+            )
+        )
+        session.commit()
+
+    captured: dict[str, object] = {}
+
+    def fake_trigger(db: Session, payload, **kwargs):
+        captured["report_date"] = payload.report_date
+        captured.update(kwargs)
+        return collector_schemas.ManualFetchResponse(ok=True, status="pending")
+
+    FetchScheduler(
+        session_factory=session_factory,
+        trigger_manual_fetch=fake_trigger,
+        now_provider=lambda: now,
+    ).run_pending_once()
+
+    assert captured["report_date"] == date(2026, 8, 10)
+    assert captured["run_reason"] == "cross_day_finalize"
 
 
 def test_create_app_disables_scheduler_by_default() -> None:

@@ -16,6 +16,9 @@ from app.models.fetch_schedule import FetchSchedule
 
 
 STALE_IN_PROGRESS_TASK_AGE = timedelta(hours=2)
+CROSS_DAY_FINALIZE_START_HOUR = 1
+CROSS_DAY_FINALIZE_END_HOUR = 3
+CROSS_DAY_FINALIZE_MAX_ATTEMPTS = 2
 
 
 def utcnow() -> datetime:
@@ -120,18 +123,67 @@ class FetchScheduler:
 
             for schedule in due_schedules:
                 local_now = now.astimezone(ZoneInfo(schedule.timezone))
+                source_now = now.astimezone(ZoneInfo(service.DEFAULT_REPORT_TIMEZONE))
                 schedule.last_triggered_at = now
+                report_date = local_now.date()
+                run_reason = "preview"
+                external_request_id = None
+                instance = schedule.collector_instance
+                enabled_account_keys = {
+                    item.strip()
+                    for item in get_settings().cross_day_finalize_account_keys.split(",")
+                    if item.strip()
+                }
+                if (
+                    instance is not None
+                    and get_settings().direct_collector_only
+                    and instance.report_account_key in enabled_account_keys
+                    and CROSS_DAY_FINALIZE_START_HOUR <= source_now.hour < CROSS_DAY_FINALIZE_END_HOUR
+                ):
+                    previous_report_date = source_now.date() - timedelta(days=1)
+                    attempts = service.list_cross_day_finalize_attempts(
+                        db,
+                        account_id=schedule.account_id,
+                        report_date=previous_report_date,
+                    )
+                    if not any(task.status in {"succeeded", "blocked"} for task in attempts):
+                        active_attempt = next(
+                            (task for task in attempts if task.status in {"pending", "in_progress"}),
+                            None,
+                        )
+                        failed_count = sum(task.status in {"failed", "cancelled"} for task in attempts)
+                        if active_attempt is not None or failed_count < CROSS_DAY_FINALIZE_MAX_ATTEMPTS:
+                            report_date = previous_report_date
+                            run_reason = "cross_day_finalize"
+                            external_request_id = (
+                                f"hourly-finalize-{schedule.account_id}-{report_date.isoformat()}-{failed_count + 1}"
+                            )
+                        else:
+                            service.record_cross_day_finalize_exhausted(
+                                db,
+                                account_id=schedule.account_id,
+                                collector_instance_id=schedule.collector_instance_id,
+                                report_date=previous_report_date,
+                            )
                 try:
+                    trigger_kwargs = {
+                        "timeout_seconds": self._timeout_seconds,
+                        "fetch_kind": "automatic_hourly",
+                        "direct_collector_only": get_settings().direct_collector_only,
+                    }
+                    if run_reason == "cross_day_finalize":
+                        trigger_kwargs.update(
+                            run_reason=run_reason,
+                            external_request_id=external_request_id,
+                        )
                     response = self._trigger_manual_fetch(
                         db,
                         schemas.ManualFetchRequest(
                             account_id=schedule.account_id,
                             collector_instance_id=schedule.collector_instance_id,
-                            report_date=local_now.date(),
+                            report_date=report_date,
                         ),
-                        timeout_seconds=self._timeout_seconds,
-                        fetch_kind="automatic_hourly",
-                        direct_collector_only=get_settings().direct_collector_only,
+                        **trigger_kwargs,
                     )
                     schedule.last_trigger_status = response.status or ("accepted" if response.ok else "failed")
                     schedule.last_trigger_message = response.message

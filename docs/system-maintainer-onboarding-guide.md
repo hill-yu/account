@@ -994,3 +994,16 @@ npm run build
 - 独立审阅：2026-08-05 独立审阅通过，无 P0/P1；确认小时分支、日报分支、维度表、迁移、API、OAuth、代理、scheduler、错误处理和安全边界均符合本次范围。P2 后续项：现有逻辑在首个小时分页 `rows=[]`、后续分页非空时可能不重置旧小时事实；该问题不写日报、不阻塞本次紧急修复，须另立 TDD 任务处理。
 - Git：分支 `codex/protect-authoritative-daily-from-hourly`，代码、测试与初始台账提交 `689b5b4c068a081b36f3d0aa647bd010a98e9dec`；不包含密码、Token、OAuth、代理凭据或生产数据。
 - 发布与回滚：2026-08-05 已发布提交 `689b5b4` 中的 `backend/app/collectors/ingestion_service.py`。发布前逐行核对生产文件与 Git 父提交一致（SHA 差异仅由 CRLF/LF 换行造成），并备份原文件至 `/srv/adx-account-isolated-collector/backups/20260805T132836Z-pre-protect-authoritative-daily`；部署后生产文件 SHA-256 为 `6e7c1a2fdcaad07524983965314a88aa3b85271012119ffa0148c815f1140d2a`，`adx-control-plane` 为 `active`，`/health` 返回 `{"status":"ok"}`，scheduler 保持 `inactive`。发布后只读复核 11 个节点的 `2026-08-04` 权威日报，Requests 等指标与任务 `22326` 至 `22336` 的恢复值完全一致。回滚为恢复上述备份中的原文件并重启控制面，但原逻辑存在已确认的数据覆盖缺陷，仅在新版本无法启动时用于短时恢复 API，且 scheduler 与小时任务必须保持停止。
+### 2026-08-11 — Pacific 跨日小时报最终刷新
+
+- 状态：开发与独立复审完成，生产灰度待执行。
+- 需求或问题：小时 scheduler 在 Pacific 跨日后永久切换到新 `report_date`，多个高量灰度节点连续缺失源小时 23（PDT 下对应次日北京时间 14:00）。
+- 变更内容：新增按账号 key 默认关闭的跨日最终刷新开关；仅在 direct collector 模式下，于 Pacific 01:00–02:59 用一次正常调度周期刷新上一源日期；任务使用 `cross_day_finalize` 原因和确定性请求 ID，成功后不重复、失败最多重试一次；两次失败后写入唯一的 `cross_day_finalize_exhausted` 阻塞记录。
+- 修改原因：从源头补齐上游迟到的上一业务日末小时，同时避免全量回补、额外任务洪峰和对低量真实零数据小时的误判。
+- 实施方案：仅命中显式灰度 key 的 enabled schedule；复用当前小时完整快照投影，只更新账号与源日期对应的小时分区；继续禁止小时批次更新账户/站点权威日报；历史日期不自动回补。
+- 预期结果与实施后果：每账号每天最多一个成功最终刷新；窗口内一次当前日刷新延后一小时，但总任务量不增加；失败两次后恢复当前日拉取并留下可查询、可去重的阻塞记录等待人工处置；非 direct 模式保持原行为。
+- 影响范围：`backend/app/config.py`、`backend/app/collectors/scheduler.py`、`backend/app/collectors/service.py`、scheduler 测试及运维文档；无数据库迁移、无 API 字段变化、无 OAuth/代理变化。
+- 验证与测试：TDD 首个用例在旧实现上失败、最小实现后通过；独立审阅提出的非 direct 门禁与重试耗尽记录均先以失败测试复现、修复后通过。后端全量测试 `164 passed`，`compileall` 与 `git diff --check` 通过；未使用真实账号、代理或生产拉取。
+- 独立审阅：首轮发现两个 P1：非 direct 远端调用不能可靠限制两次、重试耗尽会静默。已按最小范围增加 direct-only 门禁与幂等耗尽记录；复审确认两个 P1 均关闭，无 P0/P1，可提交并仅在确认 `direct_collector_only=true` 后对 `coeurdazur` 单节点灰度。剩余 P2 为双 scheduler 并发创建耗尽标记时竞争进程可能收到唯一键冲突（当前生产仅单 scheduler），以及尚未单列 spring-forward 测试，不阻塞本次单节点灰度。
+- Git：分支 `codex/cross-day-hourly-finalize`；设计/计划提交 `e3afbd1`，运行代码提交待审阅后补充。
+- 发布与回滚：计划仅在 `coeurdazur` 灰度两个 Pacific 跨日周期；回滚先清空 `ADX_COLLECTOR_CROSS_DAY_FINALIZE_ACCOUNT_KEYS`，再恢复上一 Git 版本并重启 scheduler，定向取消该账号未执行的最终刷新任务。
