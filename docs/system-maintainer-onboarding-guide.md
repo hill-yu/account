@@ -1022,3 +1022,16 @@ npm run build
 - 更新期间仅暂停 `adx-cpatobe-dev-backend.service` 与 `adx-cpatobe-dev-scheduler.service`；服务器本机回归 backend `155 passed`、collector `89 passed` 后恢复服务。backend `/health` 返回 200，backend 与 scheduler 最终均为 `active`。
 - 使用测试环境既有 Operator 鉴权只读查询 cpatobe 的 `2026-08-04` 日报：账户日报 1 条、站点日报 4 条、Link 日报 4 条、账户日报维度 30 条、站点日报维度 110 条；五类响应全部逐行包含布尔值 `is_finalized=true`。
 - 本次未触发 Google 拉取、未修改数据库、调度配置、OAuth、代理或生产服务器。测试服务器代码回滚可将 `dev` 快退至部署前提交 `ba1118a` 后重启上述两个服务；执行回滚前仍须先备份并核对工作区。
+
+### 2026-08-11 — 测试服务器 cpatobe 跨日小时收尾修复
+
+- 状态：本地 TDD 实现完成，待独立审阅、Git 提交和测试服务器部署；未修改生产服务器。
+- 需求或问题：测试服务器小时计划使用 `Asia/Shanghai`，Google 小时报表使用 `America/Los_Angeles` 业务日。北京时间先跨日后会请求未来 Pacific 日期并得到 0 行；Pacific 跨日后未回查上一业务日还会遗漏延迟到达的最后小时。
+- 变更内容：新增默认关闭的 `cross_day_finalize_account_keys`；scheduler 在 direct 模式、白名单账户及 Pacific 01:00–02:59 窗口复用当前周期刷新上一业务日；任务记录 `cross_day_finalize`、确定性请求 ID、两次失败上限及唯一 exhausted 标记。测试环境拟把 cpatobe 计划时区改为 Pacific，保留半小时频率，并配置本机 cpatobe API 的真实 runtime 三项值。
+- 修改原因：让调度任务日期与 Google 数据源业务日一致，同时补足源日最后一小时的延迟窗口。
+- 实施方案：先在隔离 worktree 按 TDD 验证红灯和绿灯；独立审阅无阻塞项后提交 Git；部署前备份环境文件和 SQLite，再仅对测试账号 `cpatobe` 配置并验收。
+- 预期后果与影响范围：仅影响测试服务器 cpatobe 小时任务选取的 Pacific 报告日期和跨日收尾周期；不改变每 30 分钟执行频率，不影响日报、OAuth、代理、数据库 schema、user_system 或生产服务器。
+- 测试：基线 scheduler 15 passed；首轮定向 scheduler 24 passed、后端全量 164 passed。审阅整改新增真实 `trigger_manual_fetch` 入口级普通任务隔离/收尾任务复用和 DST 回拨测试；修复后普通兼容性定向 2 passed、后端全量 166 passed，`git diff --check` 通过。真实链路验证待最终复审和部署后执行。
+- 独立审阅：首轮发现 finalize 可能错误复用同日普通 `preview` 活动任务的 1 个 P1，以及测试/文档未覆盖真实复用和 DST 的 1 个 P2；第二轮发现真实入口仍会提前复用普通任务的 1 个 P1。现已让 finalize 的入口查询及创建查询都只复用 `cross_day_finalize` 活动任务，并补真实入口回归；最终复审 P0/P1/P2 均为 0，可以提交和部署测试服务器。
+- Git：隔离分支 `codex/test-crossday-finalize`，提交号待生成；完成后整合到 `dev`。
+- 回滚：清空测试环境跨日白名单，恢复计划时区、两端环境文件、SQLite 备份和部署前 Git 提交；不做整库或生产回滚。

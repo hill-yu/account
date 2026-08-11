@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     operator_session_ttl_seconds: int = 43_200
     allow_stub_runtime_with_managed_credentials: bool = False
     direct_collector_only: bool = True
+    cross_day_finalize_account_keys: str = ""
 
     model_config = SettingsConfigDict(
         env_prefix="ADX_COLLECTOR_",

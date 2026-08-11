@@ -882,6 +882,8 @@ def trigger_manual_fetch(
     timeout_seconds: int,
     fetch_kind: str = "manual_hourly",
     direct_collector_only: bool = True,
+    run_reason: str = "preview",
+    external_request_id: str | None = None,
 ) -> schemas.ManualFetchResponse:
     """手动触发一次数据拉取。
 
@@ -927,6 +929,7 @@ def trigger_manual_fetch(
         db,
         account_id=payload.account_id,
         report_date=payload.report_date,
+        run_reason=run_reason if run_reason == "cross_day_finalize" else None,
     )
     if existing_task is not None:
         # 已有活跃任务，启动运行时并直接返回（不重复创建）
@@ -942,13 +945,16 @@ def trigger_manual_fetch(
         )
 
     if direct_collector_only:
-        request_id = f"direct-hourly-{payload.account_id}-{payload.report_date.isoformat()}-{token_urlsafe(8)}"
+        request_id = external_request_id or (
+            f"direct-hourly-{payload.account_id}-{payload.report_date.isoformat()}-{token_urlsafe(8)}"
+        )
         sync_task, created = _get_or_create_hourly_sync_task(
             db,
             account_id=payload.account_id,
             collector_instance_id=payload.collector_instance_id,
             report_date=payload.report_date,
             external_request_id=request_id,
+            run_reason=run_reason,
         )
         _launch_hourly_sync_runtime(instance)
         return schemas.ManualFetchResponse(
@@ -1000,7 +1006,8 @@ def trigger_manual_fetch(
         account_id=payload.account_id,
         collector_instance_id=payload.collector_instance_id,
         report_date=payload.report_date,
-        external_request_id=_optional_string(response_payload.get("request_id")),
+        external_request_id=external_request_id or _optional_string(response_payload.get("request_id")),
+        run_reason=run_reason,
     )
 
     # ── 步骤7: 启动采集器运行时进程 ──
@@ -1061,20 +1068,69 @@ def _find_active_hourly_sync_task(
     *,
     account_id: int,
     report_date: date,
+    run_reason: str | None = None,
 ) -> CollectorSyncTask | None:
     """查找指定账号+日期的活跃小时报同步任务。
 
     "活跃"指状态为 pending 或 in_progress。
     如果没有找到则返回 None。
     """
-    return db.scalar(
-        select(CollectorSyncTask).where(
+    query = select(CollectorSyncTask).where(
             CollectorSyncTask.account_id == account_id,
             CollectorSyncTask.task_type == "report_fetch_hourly",
             CollectorSyncTask.report_date == report_date,
             CollectorSyncTask.status.in_(ACTIVE_SYNC_TASK_STATUSES),
         )
+    if run_reason is not None:
+        query = query.where(CollectorSyncTask.run_reason == run_reason)
+    return db.scalar(query)
+
+
+def list_cross_day_finalize_attempts(
+    db: Session,
+    *,
+    account_id: int,
+    report_date: date,
+) -> list[CollectorSyncTask]:
+    return list(
+        db.scalars(
+            select(CollectorSyncTask)
+            .where(
+                CollectorSyncTask.account_id == account_id,
+                CollectorSyncTask.task_type == "report_fetch_hourly",
+                CollectorSyncTask.report_date == report_date,
+                CollectorSyncTask.run_reason == "cross_day_finalize",
+            )
+            .order_by(CollectorSyncTask.id.asc())
+        )
     )
+
+
+def record_cross_day_finalize_exhausted(
+    db: Session,
+    *,
+    account_id: int,
+    collector_instance_id: int,
+    report_date: date,
+) -> CollectorSyncTask:
+    external_request_id = f"hourly-finalize-{account_id}-{report_date.isoformat()}-exhausted"
+    existing = db.scalar(
+        select(CollectorSyncTask).where(CollectorSyncTask.external_request_id == external_request_id)
+    )
+    if existing is not None:
+        return existing
+    task = CollectorSyncTask(
+        account_id=account_id,
+        collector_instance_id=collector_instance_id,
+        task_type="report_fetch_hourly",
+        run_reason="cross_day_finalize_exhausted",
+        report_date=report_date,
+        status="blocked",
+        credential_version=_active_credential_version_for_task(db, account_id=account_id),
+        external_request_id=external_request_id,
+    )
+    db.add(task)
+    return task
 
 
 def _find_active_daily_sync_task(
@@ -1119,6 +1175,7 @@ def _get_or_create_hourly_sync_task(
     collector_instance_id: int,
     report_date: date,
     external_request_id: str | None,
+    run_reason: str = "preview",
 ) -> tuple[CollectorSyncTask, bool]:
     """获取或创建小时报同步任务（幂等操作）。
 
@@ -1126,7 +1183,12 @@ def _get_or_create_hourly_sync_task(
     - 如果已有活跃任务 → 返回 (existing_task, False)
     - 如果不存在 → 创建新任务 → 返回 (new_task, True)
     """
-    existing = _find_active_hourly_sync_task(db, account_id=account_id, report_date=report_date)
+    existing = _find_active_hourly_sync_task(
+        db,
+        account_id=account_id,
+        report_date=report_date,
+        run_reason=run_reason if run_reason == "cross_day_finalize" else None,
+    )
     if existing is not None:
         return existing, False
     return (
@@ -1136,6 +1198,7 @@ def _get_or_create_hourly_sync_task(
             collector_instance_id=collector_instance_id,
             report_date=report_date,
             external_request_id=external_request_id,
+            run_reason=run_reason,
         ),
         True,
     )
@@ -1182,6 +1245,7 @@ def _create_hourly_sync_task(
     collector_instance_id: int,
     report_date: date,
     external_request_id: str | None,
+    run_reason: str = "preview",
 ) -> CollectorSyncTask:
     """创建新的小时报同步任务。
 
@@ -1192,6 +1256,7 @@ def _create_hourly_sync_task(
         account_id=account_id,
         collector_instance_id=collector_instance_id,
         task_type="report_fetch_hourly",
+        run_reason=run_reason,
         report_date=report_date,
         status="pending",
         credential_version=_active_credential_version_for_task(db, account_id=account_id),
