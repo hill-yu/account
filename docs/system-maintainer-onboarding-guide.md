@@ -1025,7 +1025,7 @@ npm run build
 
 ### 2026-08-11 — 测试服务器 cpatobe 跨日小时收尾修复
 
-- 状态：本地 TDD 实现完成，待独立审阅、Git 提交和测试服务器部署；未修改生产服务器。
+- 状态：本地 TDD、独立审阅、Git 提交和测试服务器部署均已完成；未修改生产服务器。
 - 需求或问题：测试服务器小时计划使用 `Asia/Shanghai`，Google 小时报表使用 `America/Los_Angeles` 业务日。北京时间先跨日后会请求未来 Pacific 日期并得到 0 行；Pacific 跨日后未回查上一业务日还会遗漏延迟到达的最后小时。
 - 变更内容：新增默认关闭的 `cross_day_finalize_account_keys`；scheduler 在 direct 模式、白名单账户及 Pacific 01:00–02:59 窗口复用当前周期刷新上一业务日；任务记录 `cross_day_finalize`、确定性请求 ID、两次失败上限及唯一 exhausted 标记。测试环境拟把 cpatobe 计划时区改为 Pacific，保留半小时频率，并配置本机 cpatobe API 的真实 runtime 三项值。
 - 修改原因：让调度任务日期与 Google 数据源业务日一致，同时补足源日最后一小时的延迟窗口。
@@ -1033,5 +1033,14 @@ npm run build
 - 预期后果与影响范围：仅影响测试服务器 cpatobe 小时任务选取的 Pacific 报告日期和跨日收尾周期；不改变每 30 分钟执行频率，不影响日报、OAuth、代理、数据库 schema、user_system 或生产服务器。
 - 测试：基线 scheduler 15 passed；首轮定向 scheduler 24 passed、后端全量 164 passed。审阅整改新增真实 `trigger_manual_fetch` 入口级普通任务隔离/收尾任务复用和 DST 回拨测试；修复后普通兼容性定向 2 passed、后端全量 166 passed，`git diff --check` 通过。真实链路验证待最终复审和部署后执行。
 - 独立审阅：首轮发现 finalize 可能错误复用同日普通 `preview` 活动任务的 1 个 P1，以及测试/文档未覆盖真实复用和 DST 的 1 个 P2；第二轮发现真实入口仍会提前复用普通任务的 1 个 P1。现已让 finalize 的入口查询及创建查询都只复用 `cross_day_finalize` 活动任务，并补真实入口回归；最终复审 P0/P1/P2 均为 0，可以提交和部署测试服务器。
-- Git：隔离分支 `codex/test-crossday-finalize`，提交号待生成；完成后整合到 `dev`。
+- Git：功能提交 `f092cc5`；测试服务器 `/srv/adx-mid-platform-dev` 的 `dev` 已从 `315bf67` 快进到该提交。原本地 `dev` 工作区存在用户未提交且与维护手册重叠的改动，未强行覆盖；隔离分支保留完整提交。
 - 回滚：清空测试环境跨日白名单，恢复计划时区、两端环境文件、SQLite 备份和部署前 Git 提交；不做整库或生产回滚。
+
+#### 测试服务器发布与真实链路验收
+
+- 发布前备份：`/srv/adx-mid-platform-dev/backups/20260811T083528Z-pre-crossday-finalize`，包含控制面环境、cpatobe 节点环境和 SQLite 一致性备份，目录权限 0700。
+- runtime 配置：实例使用 `report_account_key=cpatobe`、本机 `report_base_url=http://127.0.0.1:9123` 和新生成的 256 位随机 Token；Token 仅存于服务器环境文件和数据库，未写入 Git、文档或输出。报表接口鉴权验证返回 HTTP 200。
+- 调度配置：计划时区由 `Asia/Shanghai` 改为 `America/Los_Angeles`，仍保留 48 个半小时触发点；白名单仅含 `cpatobe`。
+- 服务器验证：后端全量 `166 passed`；backend、scheduler、cpatobe API 最终均为 active，两个 health 均为 200。并行启动时 scheduler 的首次 ExecStartPre 因 backend 尚未就绪短暂失败，systemd 5 秒后自动重试成功，未产生任务或数据异常。
+- 真实任务：受控提前一次 `next_run_at` 后，scheduler 创建任务 296，`run_reason=cross_day_finalize`、`report_date=2026-08-10`、状态 succeeded；小时维度批次 schema 为 `admanager_hourly_dimension_v1`、row_count=6，账户小时表 4 行、站点小时表 6 行且 Requests 有值；计划自动恢复到下一个半小时点。
+- 发布范围：仅测试服务器和已授权的 cpatobe 测试账号/既有测试代理；未修改生产服务器、生产账号、生产代理、OAuth 凭据、日报逻辑或 user_system。
