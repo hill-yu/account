@@ -996,7 +996,7 @@ npm run build
 - 发布与回滚：2026-08-05 已发布提交 `689b5b4` 中的 `backend/app/collectors/ingestion_service.py`。发布前逐行核对生产文件与 Git 父提交一致（SHA 差异仅由 CRLF/LF 换行造成），并备份原文件至 `/srv/adx-account-isolated-collector/backups/20260805T132836Z-pre-protect-authoritative-daily`；部署后生产文件 SHA-256 为 `6e7c1a2fdcaad07524983965314a88aa3b85271012119ffa0148c815f1140d2a`，`adx-control-plane` 为 `active`，`/health` 返回 `{"status":"ok"}`，scheduler 保持 `inactive`。发布后只读复核 11 个节点的 `2026-08-04` 权威日报，Requests 等指标与任务 `22326` 至 `22336` 的恢复值完全一致。回滚为恢复上述备份中的原文件并重启控制面，但原逻辑存在已确认的数据覆盖缺陷，仅在新版本无法启动时用于短时恢复 API，且 scheduler 与小时任务必须保持停止。
 ### 2026-08-11 — Pacific 跨日小时报最终刷新
 
-- 状态：开发与独立复审完成，生产灰度待执行。
+- 状态：开发与独立复审完成，已仅对 `coeurdazur` 发布生产灰度；等待两个 Pacific 跨日周期验证，未扩大范围。
 - 需求或问题：小时 scheduler 在 Pacific 跨日后永久切换到新 `report_date`，多个高量灰度节点连续缺失源小时 23（PDT 下对应次日北京时间 14:00）。
 - 变更内容：新增按账号 key 默认关闭的跨日最终刷新开关；仅在 direct collector 模式下，于 Pacific 01:00–02:59 用一次正常调度周期刷新上一源日期；任务使用 `cross_day_finalize` 原因和确定性请求 ID，成功后不重复、失败最多重试一次；两次失败后写入唯一的 `cross_day_finalize_exhausted` 阻塞记录。
 - 修改原因：从源头补齐上游迟到的上一业务日末小时，同时避免全量回补、额外任务洪峰和对低量真实零数据小时的误判。
@@ -1006,4 +1006,4 @@ npm run build
 - 验证与测试：TDD 首个用例在旧实现上失败、最小实现后通过；独立审阅提出的非 direct 门禁与重试耗尽记录均先以失败测试复现、修复后通过。后端全量测试 `164 passed`，`compileall` 与 `git diff --check` 通过；未使用真实账号、代理或生产拉取。
 - 独立审阅：首轮发现两个 P1：非 direct 远端调用不能可靠限制两次、重试耗尽会静默。已按最小范围增加 direct-only 门禁与幂等耗尽记录；复审确认两个 P1 均关闭，无 P0/P1，可提交并仅在确认 `direct_collector_only=true` 后对 `coeurdazur` 单节点灰度。剩余 P2 为双 scheduler 并发创建耗尽标记时竞争进程可能收到唯一键冲突（当前生产仅单 scheduler），以及尚未单列 spring-forward 测试，不阻塞本次单节点灰度。
 - Git：分支 `codex/cross-day-hourly-finalize`；设计/计划提交 `e3afbd1`，代码、测试、问题记录与初始运维台账提交 `3546895`；不包含密码、Token、OAuth、代理凭据或生产数据。
-- 发布与回滚：计划仅在 `coeurdazur` 灰度两个 Pacific 跨日周期；回滚先清空 `ADX_COLLECTOR_CROSS_DAY_FINALIZE_ACCOUNT_KEYS`，再恢复上一 Git 版本并重启 scheduler，定向取消该账号未执行的最终刷新任务。
+- 发布与回滚：2026-08-11 已发布远程 `master` 提交 `08d2501` 中的 `config.py`、`scheduler.py`、`service.py`，环境仅设置 `ADX_COLLECTOR_CROSS_DAY_FINALIZE_ACCOUNT_KEYS=coeurdazur`。发布前确认生产运行代码精确对应 `af75eb9`、Git 工作仓库可快进到 `08d2501`、运行时 `direct_collector_only=True`、唯一 scheduler、`coeurdazur` 的 OAuth/代理/计划健康；创建受限备份 `/srv/adx-account-isolated-collector/backups/20260811T034000Z-pre-cross-day-hourly-finalize`，其中实际数据库在线备份约 4.8 GB 且 `quick_check=ok`。发布后三个运行文件与服务器 Git `08d2501` 完全一致，Git 工作区干净，控制面和 scheduler 均 `active`，scheduler 进程数为 1，`/health` 正常，生产数据库 `quick_check=ok`；未创建即时最终刷新任务，因为尚未进入 Pacific 01:00–02:59 窗口。继续仅观察 `coeurdazur` 两个 Pacific 跨日周期，未验证前不得扩大账号范围。回滚先从环境清空灰度 key 并重启 scheduler；若代码异常，再恢复上述备份中的三个文件和环境文件并重启服务，只定向取消该账号尚未执行的 `cross_day_finalize` 任务，不整库回滚。
