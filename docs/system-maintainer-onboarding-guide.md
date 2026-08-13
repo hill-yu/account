@@ -1024,3 +1024,11 @@ npm run build
 - 补拉实施结果（2026-08-12）：写前在线备份为 `/srv/adx-account-isolated-collector/backups/20260812T072216Z-pre-linkzclub-backfill/control_plane.db`（约 4.9 GB，`quick_check=ok`）。小时任务 `25346/25347/25348/25349` 分别补拉 8 月 8—11 日，全部使用 credential v3 并成功；8—10 日各覆盖 24 个源小时，8 月 11 日 Google 当前仅返回 12 个非空小时，故只记为当前快照。任务前后 8 月 8 日权威日报指标和 `updated_at` 未变，8 月 10 日原日报也未被小时任务覆盖。权威日报任务 `25350/25352/25354` 分别补拉 8 月 9—11 日并成功，Requests 分别为 `165602/168346/92995`。补拉没有修改 schedule、代理、OAuth 配置或其他账号。
 - 收尾核验：account 33 无 `pending/in_progress`，schedule 仍为启用、每 4 小时、`America/Los_Angeles`，OAuth v3 为 `authorized + healthy`，控制面与 scheduler 均 `active`，`/health` 正常，生产数据库最终 `quick_check=ok`。
 - 补拉脚本重入注意：长任务若本地调用超时，不得直接重跑整段创建脚本。先按 `external_request_id` 和 account/date 查询生产任务；本次日报脚本首次后台调用已创建任务，第二次使用相同幂等键时被数据库唯一约束安全拒绝。正确做法是复用已存在任务、等待其终态，仅当确认没有已创建任务时才生成新的唯一请求号；这次约束避免了重复任务和重复写入。
+
+### 2026-08-13 — 建立干净生产运维交接 worktree 与固定基线 Runbook
+
+- 目标与背景：纠正此前把主目录新任务误称为“新工作树”、交接摘要缺少固定 Git 基线和可执行节点接入步骤的问题。授权范围仅限本地 Git/worktree 和文档，不连接或修改生产服务器。
+- 操作内容：从最新远端 `origin/master@b157a63000763c8ef7b9967fc3d74cfe4822a4e7` 创建 `codex/production-ops-handoff` 与 `D:/code/adx-mid-platform/.worktrees/production-ops-handoff`；确认工作区干净。新增 `docs/production-ops-handoff-runbook.md`，固定生产现状清单、精确接入阶段、已验证安全命令模式、禁止事项、回滚步骤与交接输出。
+- 原因与方案：旧主目录存在大量未提交和未跟踪内容，不能作为可复现交接基线；旧摘要只描述原则，未钉住服务器、运行路径、现场 schema/Git 门禁及新节点 schedule 恢复扫描风险。新 Runbook 明确区分已提交代码事实与必须现场复核的生产事实，敏感值只允许在服务器受限进程内使用。
+- 影响与结果：仅新增本地 worktree、分支和文档；未连接生产、未改数据库、服务、OAuth、代理、任务、灰度或 schedule。原主目录全部既有修改保持不变。
+- 验证、审阅、回滚与发布：已核对 worktree HEAD、分支和初始 clean 状态，并以 `git diff --check`、关键章节断言和当前 `b157a63` router/schema/model 对照验证文档。独立审阅首轮发现 API 分阶段提交却误写为单事务、以及缺少资源/policy/runtime/schedule 精确路径两个 P1；首轮修正后复审关闭事务问题，但指出 runtime 函数名不存在、policy 缺少逐阶段迁移两个 P1。已改用实际 `_launch_hourly_sync_runtime(instance)` 的目标 ID/账户配对模板，并补齐 onboarding→health→manual→gray/hourly→authoritative daily 的独立授权、版本/行数断言和定向回滚；最终复审确认全部 P1 已关闭，无 P0/P1，可提交。回滚只需在确认提交未被其他工作引用后移除该 worktree/分支；不得清理主目录。Git 提交号在本条提交完成后以该提交自身为准；未部署生产。
