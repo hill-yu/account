@@ -1038,3 +1038,17 @@ npm run build
 - 独立审阅：P0/P1 均为 0，可以提交；P2 要求更新 `master` 前再次 fetch 并执行 fast-forward/祖先关系检查，远程基线若移动必须停止、重新移植验证和审阅，禁止强推。
 - Git：源基线 `origin/master@b157a63`；集成分支 `codex/governance-rule-master-integration`；实施提交 `cd2bcc7`，本次台账闭环提交紧随其后生成。
 - 发布与回滚：只更新 Git `master`，不部署生产。若需撤销，对本次 master 提交做反向提交；禁止重写 master 历史或覆盖追加式台账。
+
+### 2026-08-13 — 新老窗口 worktree 交接技能与初始化脚本
+
+- 状态：审阅中。
+- 需求或问题：仅靠文字规则无法稳定保证新对话对应真实、干净、基于最新 `origin/master` 的 worktree，也不能自动证明 `AGENTS.md`、维护手册和问题记录均被 Git 跟踪且与正式基线一致。
+- 变更内容：安装个人技能 `$adx-worktree-handoff`，由技能选择严格 `Validate`、只读续接 `Resume` 或新建 `Create`；新增仓库内 `scripts/project-handoff.ps1` 作为确定性、可审计实现及隔离 Git 仓库测试；在 `AGENTS.md` 新增规则 17，要求每个新窗口优先调用技能，技能不可用时显式降级为直接运行仓库脚本并报告。
+- 修改原因：把新任务启动检查从人工记忆变为失败即停止的可重复门禁，避免新对话冒充新 worktree、治理文件未跟踪或使用旧基线。
+- 实施方案：`Validate` 检查命名分支、三份治理文件存在且被跟踪、工作区 clean、治理文件与 `origin/master` 一致且 behind=0；`Resume` 允许同一已有任务 dirty 或落后，但只读报告；所有模式始终输出 `ProductionWritesAuthorized=False`，严格门禁仅以 `StrictGatePassed` 表示本地任务入口状态；`Create` 校验任务名和绝对目标路径，锁定创建前 master OID，新建 `codex/<任务名>` 后严格复核，失败只清理由本次精确创建的 worktree/分支。脚本不自动修改既有 worktree，不执行 stash/rebase/merge/生产操作。
+- 预期结果与实施后果：新任务创建和交接具有统一入口及机器可验证输出；严格 `Validate` 拒绝 dirty worktree，`Resume` 仅只读报告并保护同一任务的既有修改。技能或脚本成功均不能替代完整阅读治理文件，也不授予合并、发布或生产写权限。
+- 影响范围：PowerShell 开发工具、测试及三份治理文档；不涉及运行时代码、数据库、生产服务、OAuth、代理、任务或 schedule。
+- 验证与测试：TDD 红灯先因测试字符串插值错误未到目标断言，修正后确认因脚本缺失而失败；实现后测试依次捕获单行 Git 输出被取首字符、预期失败子进程被 `$ErrorActionPreference=Stop` 中断等缺陷，修正后 `PASS project-handoff tests`。真实 worktree 验证又发现 Windows PowerShell 5.1 将无 BOM 脚本内中文路径误解码、`git diff` 遗漏未跟踪文件，以及 `git status --short` 将未跟踪目录折叠而非列出内部测试文件；现改为 ASCII 源码动态构造问题记录文件名。技能初始化首次因 `short_description` 仅 20 个字符被官方生成器拒绝并留下模板目录；清理后重建的组合命令被安全策略拦截且未删除文件，正确替代为保留目录并精确补丁写入。官方验证器首次又因中文 Windows 用户路径按 GBK 读取 UTF-8 文件失败，改用进程级 `PYTHONUTF8=1` 后返回 `Skill is valid!`。多文件补丁两次因单个文档锚点不匹配被整体拒绝，均无部分写入。以上失败均未连接生产、未修改业务数据。
+- 独立审阅：脚本首轮发现 3 个 P1：Create 失败不回滚、Validate 不拒绝 behind、新窗口 strict clean 阻断 dirty 任务续接；已按 TDD 修复。脚本复审 P0/P1=0。技能组合审阅发现 `ProductionWritesAllowed=True` 会把严格本地门禁误表达为生产授权；已先增加红灯测试，再改为 `StrictGatePassed`，并保证三种模式始终 `ProductionWritesAuthorized=False`，等待复审。
+- Git：分支 `codex/handoff-bootstrap-script`，源基线 `origin/master@32aad8b`，提交待生成。
+- 发布与回滚：不部署生产。审阅和提交后需单独 fast-forward 集成至 `master` 才能成为新窗口正式入口；回滚使用反向提交，不删除其他台账。
