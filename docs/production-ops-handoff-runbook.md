@@ -1,8 +1,10 @@
 # ADX 中台生产运维交接清单与单节点接入 Runbook
 
-版本：2026-08-13  
-适用工作树：`D:/code/adx-mid-platform/.worktrees/production-ops-handoff`  
-分支：`codex/production-ops-handoff`  
+版本：2026-08-13
+
+适用工作树：`D:/code/adx-mid-platform/.worktrees/production-ops-handoff`
+
+分支：`codex/production-ops-handoff`
 创建基线：`origin/master@b157a63000763c8ef7b9967fc3d74cfe4822a4e7`
 
 本文是新运维任务的首要入口。它不替代生产现场核验；文中标为“已知”的值仍须在每次写操作前以只读证据重新确认。

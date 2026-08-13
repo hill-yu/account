@@ -1032,3 +1032,4 @@ npm run build
 - 原因与方案：旧主目录存在大量未提交和未跟踪内容，不能作为可复现交接基线；旧摘要只描述原则，未钉住服务器、运行路径、现场 schema/Git 门禁及新节点 schedule 恢复扫描风险。新 Runbook 明确区分已提交代码事实与必须现场复核的生产事实，敏感值只允许在服务器受限进程内使用。
 - 影响与结果：仅新增本地 worktree、分支和文档；未连接生产、未改数据库、服务、OAuth、代理、任务、灰度或 schedule。原主目录全部既有修改保持不变。
 - 验证、审阅、回滚与发布：已核对 worktree HEAD、分支和初始 clean 状态，并以 `git diff --check`、关键章节断言和当前 `b157a63` router/schema/model 对照验证文档。独立审阅首轮发现 API 分阶段提交却误写为单事务、以及缺少资源/policy/runtime/schedule 精确路径两个 P1；首轮修正后复审关闭事务问题，但指出 runtime 函数名不存在、policy 缺少逐阶段迁移两个 P1。已改用实际 `_launch_hourly_sync_runtime(instance)` 的目标 ID/账户配对模板，并补齐 onboarding→health→manual→gray/hourly→authoritative daily 的独立授权、版本/行数断言和定向回滚；最终复审确认全部 P1 已关闭，无 P0/P1，可提交。回滚只需在确认提交未被其他工作引用后移除该 worktree/分支；不得清理主目录。Git 提交号在本条提交完成后以该提交自身为准；未部署生产。
+- Git 流程失误与纠正：首次提交命令把 `git diff --cached --check`、commit 和 push 用 PowerShell 分号串联；检查发现 Runbook 头部三行尾随空格并返回非零，但后续命令仍执行，形成并推送提交 `ed32a3e`。生产无影响，文档内容无敏感信息。已另建修正提交移除空格，并规定后续提交必须使用 `$LASTEXITCODE` 显式抛错或逐条执行，校验非零时禁止 commit/push；不改写已推送历史。
