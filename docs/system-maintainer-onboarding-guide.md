@@ -842,7 +842,7 @@ npm run build
 6. 任何生产写操作先备份、后执行、再验证。
 7. 任何代码变更先补测试或更新测试，再发布。
 8. 文档要跟着行为变化更新，尤其是灰度、停拉、权威日报规则。
-9. 代码流固定为：本地隔离工作区 `dev` 开发 → 本地测试 → 独立审阅 → Git 提交 → 合并 `master` → 新服务器从 `master` 同步 → 灰度验证。不得从运行目录开发或以未提交内容部署。
+9. 代码流固定为：从最新 `origin/master` 创建独立任务分支和 worktree → 本地测试 → 独立审阅 → Git 提交 → 受控合并或精确 cherry-pick 至 `master` → 新服务器从 `master` 同步 → 灰度验证。旧 `dev` 分支和 `D:\code\adx-mid-platform-oauth-remediation` 仅用于已有历史任务兼容，不再是新任务强制入口；不得从运行目录开发或以未提交内容部署。
 10. 新服务器仅承担 `master` 发布运行；旧服务器已停止生产，仅可承担隔离测试，不得启用生产 scheduler、正式采集任务或生产数据库写入。
 
 ## 22. 功能/代码变更记录（追加式台账）
@@ -1024,3 +1024,17 @@ npm run build
 - 补拉实施结果（2026-08-12）：写前在线备份为 `/srv/adx-account-isolated-collector/backups/20260812T072216Z-pre-linkzclub-backfill/control_plane.db`（约 4.9 GB，`quick_check=ok`）。小时任务 `25346/25347/25348/25349` 分别补拉 8 月 8—11 日，全部使用 credential v3 并成功；8—10 日各覆盖 24 个源小时，8 月 11 日 Google 当前仅返回 12 个非空小时，故只记为当前快照。任务前后 8 月 8 日权威日报指标和 `updated_at` 未变，8 月 10 日原日报也未被小时任务覆盖。权威日报任务 `25350/25352/25354` 分别补拉 8 月 9—11 日并成功，Requests 分别为 `165602/168346/92995`。补拉没有修改 schedule、代理、OAuth 配置或其他账号。
 - 收尾核验：account 33 无 `pending/in_progress`，schedule 仍为启用、每 4 小时、`America/Los_Angeles`，OAuth v3 为 `authorized + healthy`，控制面与 scheduler 均 `active`，`/health` 正常，生产数据库最终 `quick_check=ok`。
 - 补拉脚本重入注意：长任务若本地调用超时，不得直接重跑整段创建脚本。先按 `external_request_id` 和 account/date 查询生产任务；本次日报脚本首次后台调用已创建任务，第二次使用相同幂等键时被数据库唯一约束安全拒绝。正确做法是复用已存在任务、等待其终态，仅当确认没有已创建任务时才生成新的唯一请求号；这次约束避免了重复任务和重复写入。
+
+### 2026-08-13 — 单独将治理文档统一基线规则集成至 master
+
+- 状态：已完成。
+- 需求或问题：用户要求只把新任务启动门禁和治理文档统一版本规则先合并到 `master`，不得夹带分类索引、交接 Runbook 等其他任务分支成果。
+- 变更内容：更新根目录 `AGENTS.md` 规则 9，并新增规则 14–16；同步更新本指南第 21 节开发流程，明确新任务必须从最新 `origin/master` 创建独立任务分支/worktree，启动时先读取当前工作区规则和指定文档，并报告 Git 基线；三份治理文档以 `origin/master` 为唯一正式事实基线。
+- 修改原因：不同 worktree 属于不同分支，未合并规则不会自动传播；直接合并 `codex/production-ops-handoff` 会同时带入 9 个提交，不符合本次单独集成授权。
+- 实施方案：从 `origin/master@b157a63` 新建临时集成 worktree `codex/governance-rule-master-integration`，仅移植规则文字和本条最小台账/问题记录；不 cherry-pick 原分支提交，不复制整份文档。验证和独立审阅通过后提交该分支，再以 fast-forward 更新 `master`。
+- 预期结果与实施后果：更新后的 `master` 将成为新 worktree 的正式治理基线；既有 worktree 仍不会自动同步，必须显式 fetch/rebase/merge 或 cherry-pick。不会引入分类索引或其他功能代码。
+- 影响范围：仅 `AGENTS.md`、本指南第 21/22 节和 `docs/问题记录.md`；无生产服务器、代码、API、数据库、OAuth、代理、任务或 schedule 变更。
+- 验证与测试：首次范围脚本直接比较 `git diff --name-only` 输出与中文路径，因 Git 默认 `core.quotepath` 转义而把实际存在的 `docs/问题记录.md` 误判为缺失；脚本按门禁停止，未提交、未推送、未影响 `master`。改用 `git -c core.quotepath=false diff --name-only` 后验证通过：差异仅为三份治理文档；规则关键字、敏感信息扫描及 `git diff --check` 均通过。
+- 独立审阅：P0/P1 均为 0，可以提交；P2 要求更新 `master` 前再次 fetch 并执行 fast-forward/祖先关系检查，远程基线若移动必须停止、重新移植验证和审阅，禁止强推。
+- Git：源基线 `origin/master@b157a63`；集成分支 `codex/governance-rule-master-integration`；实施提交在本条首次提交后生成，并由紧随其后的台账闭环提交回填。
+- 发布与回滚：只更新 Git `master`，不部署生产。若需撤销，对本次 master 提交做反向提交；禁止重写 master 历史或覆盖追加式台账。
