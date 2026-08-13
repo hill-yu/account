@@ -867,6 +867,97 @@ npm run build
 - 发布与回滚：<灰度范围、发布时间、健康检查、回滚方案及实际结果>
 ```
 
+### 按问题类型分类索引
+
+> 本索引只用于导航。第 22 节下方的追加式时间线仍是唯一事实源，历史记录保持原始时间顺序。一条记录可以出现在多个分类中；新增台账时必须同步增加唯一锚点并更新本索引。“已完成”仅表示该记录目标、Git 和适用的发布边界均已闭环；代码或审阅完成但仍待提交/发布时使用“部分完成”。
+
+#### 开发治理、Git 与工作树
+
+| 日期 | 记录 | 状态 |
+| --- | --- | --- |
+| 2026-08-02 | [建立统一维护与开发治理规则](#change-2026-08-02-development-governance) | 待处理 |
+| 2026-08-03 | [服务器运行代码与 Git 基线一致性门禁](#change-2026-08-03-runtime-git-baseline) | 已完成 |
+| 2026-08-13 | [建立干净生产运维交接 worktree 与固定基线 Runbook](#change-2026-08-13-production-ops-handoff) | 文档治理 |
+| 2026-08-13 | [维护手册分类索引设计](#change-2026-08-13-maintenance-index-design) | 仅设计/研究 |
+| 2026-08-13 | [维护手册按问题类型分类整理](#change-2026-08-13-maintenance-index-implementation) | 文档治理 |
+
+#### 生产部署、环境与 systemd
+
+| 日期 | 记录 | 状态 |
+| --- | --- | --- |
+| 2026-08-02 | [调度进程启动边界整改](#change-2026-08-02-scheduler-startup-boundary) | 部分完成 |
+| 2026-08-02 | [生产部署环境文件与 systemd 路径防护](#change-2026-08-02-deployment-environment-guard) | 部分完成 |
+| 2026-08-03 | [服务器运行代码与 Git 基线一致性门禁](#change-2026-08-03-runtime-git-baseline) | 已完成 |
+
+#### OAuth、凭据与管理员认证
+
+| 日期 | 记录 | 状态 |
+| --- | --- | --- |
+| 2026-08-02 | [形成 GAM Service Account PoC 设计与实施文档](#change-2026-08-02-gam-service-account-poc) | 仅设计/研究 |
+| 2026-08-03 | [单一管理员登录会话支持](#change-2026-08-03-single-admin-login) | 已完成 |
+| 2026-08-12 | [linkzclub 失效定位、重授权与生产指令修订](#change-2026-08-12-linkzclub-oauth-recovery) | 已完成 |
+| 2026-08-13 | [babyboutiq.com 接入耗时复盘与流程闭环](#change-2026-08-13-babyboutiq-retrospective) | 文档治理 |
+
+#### 代理与采集运行时
+
+| 日期 | 记录 | 状态 |
+| --- | --- | --- |
+| 2026-08-12 | [linkzclub 失效定位、重授权与生产指令修订](#change-2026-08-12-linkzclub-oauth-recovery) | 已完成 |
+| 2026-08-13 | [babyboutiq.com 接入耗时复盘与流程闭环](#change-2026-08-13-babyboutiq-retrospective) | 文档治理 |
+
+#### 调度、灰度与任务治理
+
+| 日期 | 记录 | 状态 |
+| --- | --- | --- |
+| 2026-08-02 | [调度进程启动边界整改](#change-2026-08-02-scheduler-startup-boundary) | 部分完成 |
+| 2026-08-05 | [权威日报自动尝试窗口调整为业务日结束后五小时](#change-2026-08-05-daily-maturity-window) | 已发布 |
+| 2026-08-11 | [Pacific 跨日小时报最终刷新](#change-2026-08-11-cross-day-hourly-finalize) | 已灰度 |
+| 2026-08-12 | [linkzclub 失效定位、重授权与生产指令修订](#change-2026-08-12-linkzclub-oauth-recovery) | 已完成 |
+| 2026-08-13 | [babyboutiq.com 接入耗时复盘与流程闭环](#change-2026-08-13-babyboutiq-retrospective) | 文档治理 |
+
+#### 小时报表与跨日完整性
+
+| 日期 | 记录 | 状态 |
+| --- | --- | --- |
+| 2026-08-05 | [禁止小时批次覆盖权威日报并恢复 8 月 4 日灰度日报](#change-2026-08-05-protect-authoritative-daily) | 已发布 |
+| 2026-08-11 | [Pacific 跨日小时报最终刷新](#change-2026-08-11-cross-day-hourly-finalize) | 已灰度 |
+
+#### 权威日报与数据保护
+
+| 日期 | 记录 | 状态 |
+| --- | --- | --- |
+| 2026-08-05 | [权威日报自动尝试窗口调整为业务日结束后五小时](#change-2026-08-05-daily-maturity-window) | 已发布 |
+| 2026-08-05 | [禁止小时批次覆盖权威日报并恢复 8 月 4 日灰度日报](#change-2026-08-05-protect-authoritative-daily) | 已发布 |
+
+#### 维度报表与 API 兼容
+
+| 日期 | 记录 | 状态 |
+| --- | --- | --- |
+| 2026-08-02 | [国家与广告单元维度明细报表](#change-2026-08-02-dimension-detail-report) | 部分完成 |
+| 2026-08-03 | [维度报表日期范围错误响应兼容修复](#change-2026-08-03-dimension-date-error-compatibility) | 已完成 |
+
+#### 前端与管理界面
+
+| 日期 | 记录 | 状态 |
+| --- | --- | --- |
+| 2026-08-03 | [单一管理员登录会话支持](#change-2026-08-03-single-admin-login) | 已完成 |
+
+#### 节点接入与运维复盘
+
+| 日期 | 记录 | 状态 |
+| --- | --- | --- |
+| 2026-08-12 | [linkzclub 失效定位、重授权与生产指令修订](#change-2026-08-12-linkzclub-oauth-recovery) | 已完成 |
+| 2026-08-13 | [建立干净生产运维交接 worktree 与固定基线 Runbook](#change-2026-08-13-production-ops-handoff) | 文档治理 |
+| 2026-08-13 | [babyboutiq.com 接入耗时复盘与流程闭环](#change-2026-08-13-babyboutiq-retrospective) | 文档治理 |
+
+#### 架构研究与新方案
+
+| 日期 | 记录 | 状态 |
+| --- | --- | --- |
+| 2026-08-02 | [形成 GAM Service Account PoC 设计与实施文档](#change-2026-08-02-gam-service-account-poc) | 仅设计/研究 |
+
+<a id="change-2026-08-02-development-governance"></a>
+
 ### 2026-08-02 — 建立统一维护与开发治理规则
 
 - 状态：审阅中
@@ -880,6 +971,8 @@ npm run build
 - 独立审阅：待独立审阅；在该文档自身提交/发布前应完成独立审阅并将结论更新到此处。
 - Git：待提交。
 - 发布与回滚：无需运行时发布；若规则表述需调整，可通过后续 Git 提交修改文档并保留本条历史记录。
+<a id="change-2026-08-02-gam-service-account-poc"></a>
+
 ### 2026-08-02 — 形成 GAM Service Account PoC 设计与实施文档
 - 状态：方案中
 - 需求或问题：针对当前 GAM 拉数 refresh token 时效与恢复成本问题，评估并设计 Service Account PoC 落地路径。
@@ -892,6 +985,8 @@ npm run build
 - 独立审阅：待独立审阅；进入任何代码实现或真实账号测试前，必须先对该设计与实施计划完成独立审阅并记录结论。
 - Git：待提交。
 - 发布与回滚：无需运行时发布；若评审后否决 SA PoC，可仅通过后续 Git 提交修订或归档文档，不涉及线上回滚。
+
+<a id="change-2026-08-02-dimension-detail-report"></a>
 
 ### 2026-08-02 — 国家与广告单元维度明细报表
 
@@ -907,6 +1002,8 @@ npm run build
 - Git：当前分支 `dev`，待提交；部署前必须完成提交并合并到 `master`。
 - 发布与回滚：尚未部署或真实 Google 拉取。发布前须获得明确批准并提供指定测试账号与代理标识；回滚为停止新 API 使用、回退 `master` 至上一已验证提交，新增维度表不影响旧报表表。
 
+<a id="change-2026-08-02-scheduler-startup-boundary"></a>
+
 ### 2026-08-02 — 调度进程启动边界整改
 
 - 状态：独立审阅通过，待提交与部署。
@@ -916,6 +1013,8 @@ npm run build
 - 验证与审阅：scheduler 专项测试 14 通过、后端全量 142 通过；独立审阅确认无未关闭 P0/P1。
 - Git 与发布：待本条随代码提交；尚未部署。
 
+<a id="change-2026-08-02-deployment-environment-guard"></a>
+
 ### 2026-08-02 — 生产部署环境文件与 systemd 路径防护
 
 - 状态：整改中，规则已落地，待随本次文档变更提交。
@@ -924,6 +1023,8 @@ npm run build
 - systemd 要求：以服务器实际 unit 为权威，逐项核对 `WorkingDirectory`、`EnvironmentFile`、`ExecStart`、运行用户和权限；scheduler 必须使用与 Web 相同的实际环境文件，并在启动前完成 schema-ready 门禁。
 - 影响与回滚：本规则增加发布前检查步骤，但避免因配置覆盖导致 API 中断、scheduler 无法启动或任务被错误推进。若同步失败，先恢复 `.env` 和服务健康，再继续任何迁移或调度动作。
 - 验证：本次已从迁移前备份恢复环境文件和 Operator Token，控制面健康恢复；scheduler 模板路径已修正为运行目录 `.env` 并成功启动。
+
+<a id="change-2026-08-03-single-admin-login"></a>
 
 ### 2026-08-03 — 单一管理员登录会话支持
 
@@ -939,6 +1040,8 @@ npm run build
 - Git：功能提交 `ed12ef5`、文档提交 `aaf2a91`，已合并并推送至 `master` 提交 `efd2c7c`。
 - 发布与回滚：2026-08-03 已发布至新服务器控制面。发布前在服务器创建了受限权限备份 `/srv/adx-account-isolated-collector/backups/20260803T032344Z-pre-single-admin-login`，其中含运行时代码、前端静态资源、SQLite 一致性备份、环境文件副本和 unit 清单；同步前的 dry-run 仅包含 7 个后端运行时文件及前端构建产物，未迁移数据库、未改动 `.env`、OAuth/代理或任务数据。发布后 `/health` 为 200，前端资源为 200，登录、会话、受保护 `/api/v1/operator/instances`、登出和登出后拒绝访问依次验证为 200/200/200/204/401，scheduler 保持 inactive。首次静态资源同步因暂存目录 `0700` 权限被 `rsync -a` 保留，Nginx 返回 403；已定位为发布工艺问题，按最小范围将 `frontend/dist` 目录设为 755、文件设为 644 后复验前端 200，并将该权限要求纳入本条记录。回滚为从上述备份还原 7 个后端文件和前端 `dist`，重启 `adx-control-plane` 后复验健康；不触碰 SQLite 或任务数据。
 
+<a id="change-2026-08-03-dimension-date-error-compatibility"></a>
+
 ### 2026-08-03 — 维度报表日期范围错误响应兼容修复
 
 - 状态：已发布。
@@ -952,6 +1055,8 @@ npm run build
 - 独立审阅：2026-08-03 两轮独立复审通过；无 P0/P1，且已确认同类不兼容常量无残留。
 - Git：随单管理员登录功能提交 `ed12ef5`，已合并并推送至 `master` 提交 `efd2c7c`。
 - 发布与回滚：2026-08-03 随同一控制面发布；未执行数据库迁移，不影响现有任务或数据。发布后控制面健康检查为 200。若需回滚，只还原这 9 处错误状态常量，不涉及数据恢复。
+
+<a id="change-2026-08-03-runtime-git-baseline"></a>
 
 ### 2026-08-03 — 服务器运行代码与 Git 基线一致性门禁
 
@@ -967,6 +1072,8 @@ npm run build
 - Git：治理规则提交 `d15040b`（`docs: enforce server Git consistency`）。
 - 发布与回滚：不发布。若后续需恢复服务器基线，先创建可验证备份和本地恢复分支；发现偏差时停止同步并保留运行目录证据。
 
+<a id="change-2026-08-05-daily-maturity-window"></a>
+
 ### 2026-08-05 — 权威日报自动尝试窗口调整为业务日结束后五小时
 
 - 状态：已发布，scheduler 保持停止。
@@ -981,6 +1088,8 @@ npm run build
 - Git：分支 `codex/daily-maturity-window`，运行时代码提交 `4175bdd`，审阅与发布台账提交 `d25cdeb`；不包含任何密码、Token、OAuth 或代理凭据。
 - 发布与回滚：2026-08-05 已发布到生产服务器。发布前创建受限权限备份 `/srv/adx-account-isolated-collector/backups/20260805T123426Z-pre-daily-five-hour-window`，其中含原 `service.py`、运行环境文件副本、systemd unit 文本和 SQLite 一致性备份；仅同步已提交的 `service.py`，未修改数据库业务数据、OAuth、代理或 API 契约。发布后控制面 `/health` 返回 `{"status":"ok"}`，服务为 `active`，本地与生产 `service.py` SHA-256 一致，运行时确认等待量为 `5.0` 小时且洛杉矶春季 DST 边界为 `2026-03-08T13:00:00+00:00`。发布前发现 scheduler 意外处于 `active`，为阻止旧两小时规则继续创建任务已先停止；发布后保持 `inactive`。其 systemd 启动策略仍为 `enabled`，服务器重启时会自动启动，未在本次未经额外授权的范围内修改。回滚为恢复上述备份中的 `service.py` 并重启 `adx-control-plane`；不触碰数据库业务数据，也不启动 scheduler。
 
+<a id="change-2026-08-05-protect-authoritative-daily"></a>
+
 ### 2026-08-05 — 禁止小时批次覆盖权威日报并恢复 8 月 4 日灰度日报
 
 - 状态：已发布；生产日报数据已恢复，小时批次覆盖权威日报的代码路径已移除，scheduler 保持 `inactive`。
@@ -994,6 +1103,8 @@ npm run build
 - 独立审阅：2026-08-05 独立审阅通过，无 P0/P1；确认小时分支、日报分支、维度表、迁移、API、OAuth、代理、scheduler、错误处理和安全边界均符合本次范围。P2 后续项：现有逻辑在首个小时分页 `rows=[]`、后续分页非空时可能不重置旧小时事实；该问题不写日报、不阻塞本次紧急修复，须另立 TDD 任务处理。
 - Git：分支 `codex/protect-authoritative-daily-from-hourly`，代码、测试与初始台账提交 `689b5b4c068a081b36f3d0aa647bd010a98e9dec`；不包含密码、Token、OAuth、代理凭据或生产数据。
 - 发布与回滚：2026-08-05 已发布提交 `689b5b4` 中的 `backend/app/collectors/ingestion_service.py`。发布前逐行核对生产文件与 Git 父提交一致（SHA 差异仅由 CRLF/LF 换行造成），并备份原文件至 `/srv/adx-account-isolated-collector/backups/20260805T132836Z-pre-protect-authoritative-daily`；部署后生产文件 SHA-256 为 `6e7c1a2fdcaad07524983965314a88aa3b85271012119ffa0148c815f1140d2a`，`adx-control-plane` 为 `active`，`/health` 返回 `{"status":"ok"}`，scheduler 保持 `inactive`。发布后只读复核 11 个节点的 `2026-08-04` 权威日报，Requests 等指标与任务 `22326` 至 `22336` 的恢复值完全一致。回滚为恢复上述备份中的原文件并重启控制面，但原逻辑存在已确认的数据覆盖缺陷，仅在新版本无法启动时用于短时恢复 API，且 scheduler 与小时任务必须保持停止。
+<a id="change-2026-08-11-cross-day-hourly-finalize"></a>
+
 ### 2026-08-11 — Pacific 跨日小时报最终刷新
 
 - 状态：开发与独立复审完成，已仅对 `coeurdazur` 发布生产灰度；等待两个 Pacific 跨日周期验证，未扩大范围。
@@ -1008,6 +1119,8 @@ npm run build
 - Git：分支 `codex/cross-day-hourly-finalize`；设计/计划提交 `e3afbd1`，代码、测试、问题记录与初始运维台账提交 `3546895`；不包含密码、Token、OAuth、代理凭据或生产数据。
 - 发布与回滚：2026-08-11 已发布远程 `master` 提交 `08d2501` 中的 `config.py`、`scheduler.py`、`service.py`，环境仅设置 `ADX_COLLECTOR_CROSS_DAY_FINALIZE_ACCOUNT_KEYS=coeurdazur`。发布前确认生产运行代码精确对应 `af75eb9`、Git 工作仓库可快进到 `08d2501`、运行时 `direct_collector_only=True`、唯一 scheduler、`coeurdazur` 的 OAuth/代理/计划健康；创建受限备份 `/srv/adx-account-isolated-collector/backups/20260811T034000Z-pre-cross-day-hourly-finalize`，其中实际数据库在线备份约 4.8 GB 且 `quick_check=ok`。发布后三个运行文件与服务器 Git `08d2501` 完全一致，Git 工作区干净，控制面和 scheduler 均 `active`，scheduler 进程数为 1，`/health` 正常，生产数据库 `quick_check=ok`；未创建即时最终刷新任务，因为尚未进入 Pacific 01:00–02:59 窗口。继续仅观察 `coeurdazur` 两个 Pacific 跨日周期，未验证前不得扩大账号范围。回滚先从环境清空灰度 key 并重启 scheduler；若代码异常，再恢复上述备份中的三个文件和环境文件并重启服务，只定向取消该账号尚未执行的 `cross_day_finalize` 任务，不整库回滚。
 - 扩大灰度：2026-08-11 用户明确要求不再等待 `coeurdazur` 单节点周期验证，扩大到其他当前健康节点。只读门禁筛选标准为账号/实例有效、OAuth `healthy+authorized`、代理 `active`、schedule `enabled`、`interval_hours=1`、schedule timezone 为 `America/Los_Angeles`；最终配置为 `coeurdazur,cpatobe,dddfdc,ddgjcj,linkzclub,onlyfungogo,reboroots,skouje,tqchq,uragnv,zilote`。`stones` 因每 4 小时计划可能错过最终刷新窗口而未纳入；停用、授权异常、非健康或无每小时计划的节点均未扩大。配置写入前创建 `/srv/adx-account-isolated-collector/backups/20260811T071500Z-pre-expand-cross-day-finalize`，含环境文件、scheduler unit 和约 4.8 GB SQLite 在线一致性备份，`quick_check=ok`。首次 SFTP 普通 rename 因不支持覆盖而失败，自动恢复旧环境并重启 scheduler；改用 POSIX 原子覆盖后配置验证通过，控制面和 scheduler 均 `active`、scheduler 进程数为 1、`/health` 正常。回滚只需恢复该备份中的 `backend.env` 并重启 scheduler；不修改数据库业务数据。
+
+<a id="change-2026-08-12-linkzclub-oauth-recovery"></a>
 
 ### 2026-08-12 — linkzclub 失效定位、重授权与生产指令修订
 
@@ -1025,6 +1138,8 @@ npm run build
 - 收尾核验：account 33 无 `pending/in_progress`，schedule 仍为启用、每 4 小时、`America/Los_Angeles`，OAuth v3 为 `authorized + healthy`，控制面与 scheduler 均 `active`，`/health` 正常，生产数据库最终 `quick_check=ok`。
 - 补拉脚本重入注意：长任务若本地调用超时，不得直接重跑整段创建脚本。先按 `external_request_id` 和 account/date 查询生产任务；本次日报脚本首次后台调用已创建任务，第二次使用相同幂等键时被数据库唯一约束安全拒绝。正确做法是复用已存在任务、等待其终态，仅当确认没有已创建任务时才生成新的唯一请求号；这次约束避免了重复任务和重复写入。
 
+<a id="change-2026-08-13-production-ops-handoff"></a>
+
 ### 2026-08-13 — 建立干净生产运维交接 worktree 与固定基线 Runbook
 
 - 目标与背景：纠正此前把主目录新任务误称为“新工作树”、交接摘要缺少固定 Git 基线和可执行节点接入步骤的问题。授权范围仅限本地 Git/worktree 和文档，不连接或修改生产服务器。
@@ -1034,6 +1149,8 @@ npm run build
 - 验证、审阅、回滚与发布：已核对 worktree HEAD、分支和初始 clean 状态，并以 `git diff --check`、关键章节断言和当前 `b157a63` router/schema/model 对照验证文档。独立审阅首轮发现 API 分阶段提交却误写为单事务、以及缺少资源/policy/runtime/schedule 精确路径两个 P1；首轮修正后复审关闭事务问题，但指出 runtime 函数名不存在、policy 缺少逐阶段迁移两个 P1。已改用实际 `_launch_hourly_sync_runtime(instance)` 的目标 ID/账户配对模板，并补齐 onboarding→health→manual→gray/hourly→authoritative daily 的独立授权、版本/行数断言和定向回滚；最终复审确认全部 P1 已关闭，无 P0/P1，可提交。回滚只需在确认提交未被其他工作引用后移除该 worktree/分支；不得清理主目录。Git 提交号在本条提交完成后以该提交自身为准；未部署生产。
 - Git 流程失误与纠正：首次提交命令把 `git diff --cached --check`、commit 和 push 用 PowerShell 分号串联；检查发现 Runbook 头部三行尾随空格并返回非零，但后续命令仍执行，形成并推送提交 `ed32a3e`。生产无影响，文档内容无敏感信息。已另建修正提交移除空格，并规定后续提交必须使用 `$LASTEXITCODE` 显式抛错或逐条执行，校验非零时禁止 commit/push；不改写已推送历史。
 
+<a id="change-2026-08-13-babyboutiq-retrospective"></a>
+
 ### 2026-08-13 — babyboutiq.com 接入耗时复盘与流程闭环
 
 - 时间、目标与授权范围：北京时间 2026-08-13，按 `AGENTS.md` 对 `babyboutiq.com` 历史接入耗时进行只读复盘，并将结论写入问题记录、维护台账和交接 Runbook；不连接或修改生产，不执行 OAuth、代理测试、拉数、灰度或调度。
@@ -1041,6 +1158,8 @@ npm run build
 - 实施方案与文档结果：在问题记录新增完整复盘，包含背景、现象、影响、根因、止损、正确顺序、验证、状态和防再犯；在 Runbook 新增“接入前一次性预演”，要求写生产前一次性确认 Git/SSH/业务属性/schema/API/全阶段授权/自动候选日期/回滚，并新增 PowerShell 原生命令失败必须阻断后续提交的禁止项。首次三文件补丁因台账锚点空格不匹配被完整拒绝，无部分写入；读取精确文本后完成最小补丁。
 - 影响范围与实施后果：仅修改上述三份本地文档，不改变任何代码、数据库、服务、账号、OAuth、代理、任务、数据、灰度或 schedule。预期以后同类接入在开始前暴露信息和门禁缺口，减少阶段间反复与范围外任务。
 - 验证、审阅、Git、发布与回滚：首轮独立审阅发现两项 P1：具体归因缺少版本化证据、缺少可审计耗时和最终状态。已补充主目录历史台账中的资源 ID、任务 ID、batch、备份时间戳和 schedule 历史收尾快照，明确这些不是当前状态；同时标记总耗时无法量化，并把后续 SSH 失败与第一次生产接入分离。复审确认两项 P1 均关闭，无 P0/P1，可提交。证据读取时间为 2026-08-13；主目录原始 `docs/问题记录.md` 的 UTC 修改时间为 2026-08-12 14:41:29、SHA-256 为 `3D8A720753DB006331B39AFA4F5A0F4935EE91C58846C2D1EB5647C3C7E776A2`，原始维护手册同一 UTC 修改时间、SHA-256 为 `16F46EF2B0D897055F5AFDB1E11DAEAB6F943A85A20A4C6527C8EB3615228121`。提交前执行关键内容断言、`git diff --check` 和敏感字面量扫描；提交并推送 `codex/production-ops-handoff`，不部署生产。若撤销，仅回滚本条复盘、问题记录条目和 Runbook 新增清单，不覆盖其他历史。
+
+<a id="change-2026-08-13-maintenance-index-design"></a>
 
 ### 2026-08-13 — 维护手册分类索引设计
 
@@ -1050,3 +1169,20 @@ npm run build
 - 验证、Git、发布与回滚：规格将执行占位符、分类覆盖、内部一致性和范围自检后提交 `codex/production-ops-handoff`，供用户书面审查。未实施分类索引、未部署生产。若设计被否决，只回滚规格和本条设计记录，不触碰既有台账。
 - 规格自检失误与纠正：首次自检脚本断言规格必须包含精确短语“保持原始时间顺序”，但规格当时使用“保留完整时间顺序”的同义表述，导致脚本失败；未产生额外文件或生产写入。正确做法是让机器断言对应明确、稳定的成功标准，而不是依赖任意叙述措辞。已将用户确认的原话补为显式成功标准，再重新执行自检。
 - 用户规格审阅与实施计划：用户确认分类索引设计无误。随后形成 `docs/superpowers/plans/2026-08-13-maintenance-guide-category-index.md`，计划覆盖原始顺序基线、分类映射、稳定锚点、问题闭环、链接/覆盖验证、独立审阅和 Git 短路门禁。当前尚未实施分类索引或连接生产。
+
+<a id="change-2026-08-13-maintenance-index-implementation"></a>
+
+### 2026-08-13 — 维护手册按问题类型分类整理
+
+- 状态：已完成。
+- 需求或问题：维护手册第 22 节长期按时间追加，能够审计但难以按 OAuth、调度、小时、日报、部署、前端或节点接入等问题类型快速检索；用户要求保持原始时间顺序并新增分类索引。
+- 变更内容：在记录模板与首条正式记录之间新增 11 类问题索引；为全部正式记录增加唯一 ASCII HTML 锚点；允许同一记录进入多个分类，不复制或移动历史正文。
+- 修改原因：同时满足按问题检索和时间线审计，避免通过重排历史记录破坏证据顺序，也避免复制正文形成多个事实源。
+- 实施方案：依据已审阅规格 `docs/superpowers/specs/2026-08-13-maintenance-guide-category-index-design.md` 和实施计划 `docs/superpowers/plans/2026-08-13-maintenance-guide-category-index.md`，先保存原始标题顺序，再添加分类表与锚点，最后以脚本验证顺序、链接、唯一性、覆盖率和状态词汇。
+- 预期结果与实施后果：维护人员可从问题类型直接跳转到原始台账；新增记录需同步维护索引和锚点，增加少量文档维护成本。不影响代码、API、数据库或生产运行。
+- 影响范围：仅 `docs/system-maintainer-onboarding-guide.md`、`docs/问题记录.md` 和本任务计划；不涉及生产服务器、OAuth、代理、任务、灰度或 schedule。
+- 验证与测试：结构脚本验证通过：15 条原记录标题和相对顺序未变，第 16 条本次记录仅追加在末尾；16 个锚点唯一；30 个索引链接全部命中；每条正式记录至少被索引一次；11 个分类和状态有限词汇均通过。`git diff --check` 通过，最终敏感信息扫描待提交前执行。
+- 独立审阅：首轮无 P0，发现 1 个 P1：三条尚待 Git/发布闭环的记录被误标为“已完成”。首次复审又发现“调度进程启动边界整改”在第二个分类中的重复索引状态未同步，仍构成 1 个 P1；修正后最终定点复审确认 P0/P1/P2 均为 0，可以提交。
+- 校验指令失误与纠正：复验脚本先后因错误分隔假设、边界锚点定位及 PowerShell 管道中文源码/路径编码差异失败六次；前五次分别表现为一次 `IndexError`、两次 `ValueError`、一次状态词汇断言失败和一次中文路径 `OSError`，第六次因问题记录和维护台账都如实包含 `IndexError` 字样却错误断言仅一个文件命中而失败。均未写入文档或生产。正确做法是先用 `rg`/逐行读取确认布局，从首条 `change-*` 锚点向上定位最近的三级标题作为索引起点，自动断言只依赖 ASCII 结构，并通过目录枚举定位中文文件；中文状态值另由 UTF-8 读取结果和独立复审确认。
+- Git：分支 `codex/production-ops-handoff`；实施提交在本条首次提交后生成，并由紧随其后的台账闭环提交回填实际提交号。
+- 发布与回滚：不部署生产。回滚只删除本次索引、锚点、本记录和对应问题记录，不移动或覆盖既有时间线正文。
