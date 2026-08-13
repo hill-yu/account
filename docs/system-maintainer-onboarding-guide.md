@@ -1052,3 +1052,9 @@ npm run build
 - 独立审阅：脚本首轮发现 3 个 P1：Create 失败不回滚、Validate 不拒绝 behind、新窗口 strict clean 阻断 dirty 任务续接；已按 TDD 修复。脚本复审 P0/P1=0。技能组合审阅发现 `ProductionWritesAllowed=True` 会把严格本地门禁误表达为生产授权；已先增加红灯测试，再改为 `StrictGatePassed`，并保证三种模式始终 `ProductionWritesAuthorized=False`，等待复审。
 - Git：分支 `codex/handoff-bootstrap-script`，源基线 `origin/master@32aad8b`，提交待生成。
 - 发布与回滚：不部署生产。审阅和提交后需单独 fast-forward 集成至 `master` 才能成为新窗口正式入口；回滚使用反向提交，不删除其他台账。
+
+#### 2026-08-13 交接技能提交与集成闭环
+
+- 实施结果：个人技能安装在 `C:\Users\喻远飞\.codex\skills\adx-worktree-handoff`；仓库脚本、测试、规则、计划和脱敏记录提交为 `7a44c8b`，分支 `codex/handoff-bootstrap-script` 已推送，远程 `master` 已由 `32aad8b` 以 fast-forward 更新到 `7a44c8b`。未修改主目录既有工作区。
+- 验证与审阅：PowerShell 隔离仓库测试返回 `PASS project-handoff tests`；官方技能校验在 `PYTHONUTF8=1` 下返回 `Skill is valid!`；`git diff --check` 通过。最终独立复审为 P0=0、P1=0、P2=0。
+- 发布状态与回滚：仅发布 Git 治理基线和本机个人技能，未部署生产、未连接生产服务、未修改数据库/OAuth/代理/任务/schedule。Git 回滚使用反向提交；个人技能回滚仅移除该精确技能目录，但执行前必须重新核验目标路径并另行记录。
