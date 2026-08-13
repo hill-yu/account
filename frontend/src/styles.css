@@ -393,6 +393,32 @@ select option {
 .table-card { padding: 0; overflow: hidden; }
 .table-card > .data-table { margin: 0; }
 
+.oauth-apps-table-card {
+  overflow-x: auto;
+}
+
+.oauth-apps-table {
+  min-width: 760px;
+  table-layout: fixed;
+}
+
+.oauth-apps-table th:nth-child(1) { width: 48px; }
+.oauth-apps-table th:nth-child(2) { width: 30%; }
+.oauth-apps-table th:nth-child(3),
+.oauth-apps-table th:nth-child(4),
+.oauth-apps-table th:nth-child(5) { width: 90px; }
+.oauth-apps-table th:nth-child(7) { width: 130px; }
+
+.oauth-app-info {
+  overflow-wrap: anywhere;
+}
+
+.oauth-app-info .secondary-button {
+  display: block;
+  margin-top: var(--space-3);
+  white-space: nowrap;
+}
+
 /* ── Summary Grid ──────────────────────────────────────────── */
 .summary-grid {
   display: grid;

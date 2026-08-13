@@ -304,8 +304,8 @@ export function OAuthAppsSection({
             </div>
           </div>
 
-          <div className="table-card">
-            <table className="data-table">
+          <div className="table-card oauth-apps-table-card">
+            <table className="data-table oauth-apps-table">
               <thead>
                 <tr>
                   <th>ID</th>
@@ -316,7 +316,6 @@ export function OAuthAppsSection({
                   <th>Failure</th>
                   <th>Verified</th>
                   <th>Next action</th>
-                  <th>Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -326,9 +325,17 @@ export function OAuthAppsSection({
                   return (
                     <tr key={oauthApp.id}>
                       <td>{oauthApp.id}</td>
-                      <td>
+                      <td className="oauth-app-info">
                         <div>{oauthApp.account_id} / {oauthApp.client_id}</div>
                         <div className="token-meta">{oauthApp.redirect_uri}</div>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => void handleGenerate(oauthApp)}
+                          disabled={action.disabled || generatingId === oauthApp.id}
+                        >
+                          {generatingId === oauthApp.id ? "Generating..." : action.label}
+                        </button>
                       </td>
                       <td><StatusBadge value={oauthApp.flow_status} /></td>
                       <td><StatusBadge value={oauthApp.runtime_status} /></td>
@@ -342,22 +349,12 @@ export function OAuthAppsSection({
                       </td>
                       <td>{formatDateTime(oauthApp.last_verified_at)}</td>
                       <td>{oauthApp.next_action ?? "-"}</td>
-                      <td>
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() => void handleGenerate(oauthApp)}
-                          disabled={action.disabled || generatingId === oauthApp.id}
-                        >
-                          {generatingId === oauthApp.id ? "Generating..." : action.label}
-                        </button>
-                      </td>
                     </tr>
                   );
                 })}
                 {oauthApps.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="empty-cell">
+                    <td colSpan={8} className="empty-cell">
                       No OAuth apps yet. Create one per account and verify the redirect URI before authorizing.
                     </td>
                   </tr>
