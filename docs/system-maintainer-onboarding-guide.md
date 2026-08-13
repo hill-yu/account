@@ -1201,5 +1201,5 @@ npm run build
 - 影响范围：仅修改当前分支的 `AGENTS.md`、维护手册和问题记录；不涉及代码、API、数据库、生产服务器、OAuth、代理、任务或 schedule。只有本提交后续集成进 `master`，其他从新版 `master` 创建或同步的 worktree 才会获得该规则。
 - 验证与测试：首次验证脚本在 PowerShell 管道源码中依赖中文标题定位问题记录，因编码差异触发 `StopIteration`；P1 修复后的复验又错误使用中文断言常量，触发 `AssertionError`。均未产生额外文件写入或生产影响。已禁止本任务继续使用管道内中文 Python 常量，改用 `rg` UTF-8 文本匹配与纯 ASCII 结构脚本；最终结果待复验。
 - 独立审阅：首轮发现 1 个 P1：新增的任务 worktree 规则与旧规则 9、维护原则固定 `dev`/旧目录的要求冲突。现已明确以最新 `origin/master` 创建独立任务分支/worktree，并将旧 `dev` 和旧目录降为历史任务兼容入口；最终复审确认 P0/P1/P2 均为 0，可以提交。
-- Git：分支 `codex/production-ops-handoff`；实施提交在本条首次提交后生成，并由紧随其后的台账闭环提交回填实际提交号。
+- Git：分支 `codex/production-ops-handoff`；实施提交 `7899333`，本次台账闭环提交紧随其后生成。
 - 发布与回滚：不部署生产。回滚仅撤销本次三份文档变更；若已集成进 `master`，使用后续反向提交，不覆盖其他追加记录。
