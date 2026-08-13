@@ -37,6 +37,20 @@
 
 每个阶段均只允许操作一个用户明确指定的 `account_key`。上一步验证不通过时停止，不得继续下一阶段。
 
+### 接入前一次性预演
+
+正式连接生产前，维护者必须在同一张接入检查单中一次性列出并确认以下内容，避免执行到中途才发现门禁：
+
+1. 工作树绝对路径、分支、HEAD、clean 状态和目标生产提交。
+2. 唯一生产服务器、SSH 身份及全新无副作用连接验收结果。
+3. account key、network code、账户报告时区、币种、redirect URI、专属代理和预期出口 IP。
+4. 当前生产 schema、API schema、systemd 环境文件、控制库路径及磁盘空间。
+5. 基础资源、OAuth URL、callback、credential validation、policy active、health check、manual、gray/hourly、authoritative daily、schedule 的逐阶段授权边界。
+6. 以纯只读 dry-run 计算首次启用 schedule 时当前代码可能生成的恢复候选日期和任务数量；预演不得创建任务、修改 schedule 或 policy，该范围必须先与用户授权范围比较。
+7. 每一阶段的在线备份、验证证据、补偿回滚和停止条件。
+
+检查单任何一项缺失时，只能继续只读排查。禁止边执行边猜测字段、路径、Token 位置、policy 状态或自动任务范围。
+
 ### 阶段 0：填写接入申请
 
 必须明确：账户名、GAM network code、账户实际报告时区、币种、OAuth Web client JSON、精确 redirect URI、专属代理、是否仅基础接入、是否授权生成链接/兑换/真实拉数/灰度/schedule。缺项时只读排查，不写生产。
@@ -281,6 +295,7 @@ git -C /srv/adx-account-isolated-collector diff --check
 - 禁止因单节点接入改动全局 scheduler、其他节点 policy、灰度名单或停拉名单。
 - 禁止在启用 schedule 前忽略 OAuth 恢复缺口扫描；禁止把额外自动日期误报成用户授权范围。
 - 禁止客户端超时后未经查询就重试创建任务。
+- 禁止用 PowerShell 分号连接“检查 → commit → push”等必须短路的步骤；每个原生命令后必须验证 `$LASTEXITCODE`，检查失败立即抛错并停止。
 
 ## 5. 回滚步骤
 
