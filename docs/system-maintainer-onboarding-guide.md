@@ -1036,5 +1036,5 @@ npm run build
 - 影响范围：仅 `AGENTS.md`、本指南第 21/22 节和 `docs/问题记录.md`；无生产服务器、代码、API、数据库、OAuth、代理、任务或 schedule 变更。
 - 验证与测试：首次范围脚本直接比较 `git diff --name-only` 输出与中文路径，因 Git 默认 `core.quotepath` 转义而把实际存在的 `docs/问题记录.md` 误判为缺失；脚本按门禁停止，未提交、未推送、未影响 `master`。改用 `git -c core.quotepath=false diff --name-only` 后验证通过：差异仅为三份治理文档；规则关键字、敏感信息扫描及 `git diff --check` 均通过。
 - 独立审阅：P0/P1 均为 0，可以提交；P2 要求更新 `master` 前再次 fetch 并执行 fast-forward/祖先关系检查，远程基线若移动必须停止、重新移植验证和审阅，禁止强推。
-- Git：源基线 `origin/master@b157a63`；集成分支 `codex/governance-rule-master-integration`；实施提交在本条首次提交后生成，并由紧随其后的台账闭环提交回填。
+- Git：源基线 `origin/master@b157a63`；集成分支 `codex/governance-rule-master-integration`；实施提交 `cd2bcc7`，本次台账闭环提交紧随其后生成。
 - 发布与回滚：只更新 Git `master`，不部署生产。若需撤销，对本次 master 提交做反向提交；禁止重写 master 历史或覆盖追加式台账。
