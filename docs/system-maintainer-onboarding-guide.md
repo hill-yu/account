@@ -1058,3 +1058,17 @@ npm run build
 - 实施结果：个人技能安装在 `C:\Users\喻远飞\.codex\skills\adx-worktree-handoff`；仓库脚本、测试、规则、计划和脱敏记录提交为 `7a44c8b`，分支 `codex/handoff-bootstrap-script` 已推送，远程 `master` 已由 `32aad8b` 以 fast-forward 更新到 `7a44c8b`。未修改主目录既有工作区。
 - 验证与审阅：PowerShell 隔离仓库测试返回 `PASS project-handoff tests`；官方技能校验在 `PYTHONUTF8=1` 下返回 `Skill is valid!`；`git diff --check` 通过。最终独立复审为 P0=0、P1=0、P2=0。
 - 发布状态与回滚：仅发布 Git 治理基线和本机个人技能，未部署生产、未连接生产服务、未修改数据库/OAuth/代理/任务/schedule。Git 回滚使用反向提交；个人技能回滚仅移除该精确技能目录，但执行前必须重新核验目标路径并另行记录。
+
+### 2026-08-13 — OAuth 授权按钮布局修复设计
+
+- 状态：设计规格审阅通过，待实现；未发布。
+- 需求或问题：控制台 `OAuth Apps` 表格位于双栏布局右侧，授权按钮又处于最右侧独立 Action 列；表格自动宽度、超长 client ID/redirect URI 与容器裁切共同导致按钮难以发现或不可见。
+- 变更内容：新增 `docs/superpowers/specs/2026-08-13-oauth-authorization-button-layout-design.md`，设计将授权按钮移动到 `Account / App` 单元格，删除独立 Action 列，并为 OAuth 表格增加专用列宽、长文本换行和窄屏滚动兜底。
+- 修改原因：确保管理员无需滚动到表格最右侧即可找到生成授权链接、重新授权或恢复授权操作。
+- 实施方案：后续按 TDD 先以 DOM 结构测试复现按钮位于最右列的问题，再做最小 JSX/CSS 修改；保留现有 OAuth 状态机和 API 行为，并在 1440px、768px 视口使用超长字段验证按钮可见性。
+- 预期结果与实施后果：授权操作与应用身份信息相邻且在常用视口初始位置可见；其他诊断列保持完整，窄屏时可横向滚动查看。不会改变 OAuth state/code、凭据、后端接口或生产数据。
+- 影响范围：当前仅涉及设计规格和维护台账；计划中的实现范围限定为 OAuth 前端组件、局部样式和前端测试，无数据库、任务、schedule、代理或生产配置影响。
+- 验证与测试：规格已通过占位符扫描和 `git diff --check`；尚未修改实现代码或运行真实 OAuth 测试。
+- 独立审阅：独立规格审阅首轮发现按钮仍可能被长字段撑宽后裁切的 P1，以及 DOM 弱断言、状态矩阵和回滚描述 P2；修订后复审确认 P0/P1/P2 均为 0，可提交并进入实现计划。
+- Git：分支 `codex/oauth-button-layout-fix`，规格提交号待本条提交完成后以该提交自身为准。
+- 发布与回滚：未发布。规格回滚使用反向提交；任何实现和生产发布仍须另行完成 TDD、独立审阅、Git 集成和发布门禁。
