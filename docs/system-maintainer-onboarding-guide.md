@@ -1093,3 +1093,13 @@ npm run build
 3. **跨 shell 引号**：两次错误模板把复杂 `python -c` 嵌套进 PowerShell 与 SSH 双重引号，分别在本机提前解释和远端 shell 报未闭合引号；Python/SQL未执行。正确模板为 `$py=@'...只读 Python...'@; $py | ssh <固定主机与密钥参数> python3 -`。验证：后续 schema、任务与事实查询成功。防再犯：多行 Python 一律 stdin 传递，不再嵌套 `-c`。
 4. **不存在的 Base64 帮助函数**：错误方案在当前 JS 编排环境调用 `btoa`，本机报 `ReferenceError`，SSH未发起。正确替代仍为 stdin 模板；若必须 Base64，只能使用当前环境明确存在且先验证的编码工具。验证：stdin 路径成功。防再犯：不得假定浏览器全局函数存在。
 5. **备份目录权限**：首次以 `ubuntu` 直接 `os.makedirs('/srv/.../backups/<精确目录>')`，报 `PermissionError`，未创建目录或数据库副本。确认目标、磁盘和授权后，正确模板为 `$py | ssh <固定主机与密钥参数> sudo python3 -`，脚本只创建本次精确目录、执行 SQLite online backup、设置 0700/0600 并校验源/备份。验证：备份大小 5,447,819,264 字节，双 `quick_check=ok`。防再犯：写前先核验父目录 owner/mode，不以失败试探权限。
+
+### 2026-08-14 — tqchq 北京时间 8 月 14 日小时窗口双源日定向刷新
+
+- 状态：生产双源日刷新完成；Google 当前仍只返回北京时间 00:00—03:00，未伪造或补写空缺小时；独立复审 P0/P1/P2 均为 0，允许提交。
+- 目标与边界：用户要求按北京时间 2026-08-14 查询并补小时。精确窗口为 UTC `[2026-08-13 16:00, 2026-08-14 16:00)`，对应 PDT `2026-08-13 09:00—2026-08-14 08:59`，因此必须串行刷新 Pacific 源日 8 月 13、14 日再按 `report_time_utc` 截取。未修改代码、schedule、policy、OAuth、代理或其他账号。
+- 写前保护：确认 account 38 无 active task，8 月 13 日权威日报基线为 Requests=550,390、Responses=459,577、Impressions=381,445、Clicks=5,811、Revenue=12,650.367685、eCPM=33.164330、`updated_at=2026-08-14 13:16:55`。在线备份 `/srv/adx-account-isolated-collector/backups/20260814T132737Z-pre-tqchq-bjt-20260814-hourly/control_plane.db` 大小 5,450,219,520 字节，源/备份 `quick_check=ok`。
+- 执行证据：源日 8 月 13 日任务 `25992` succeeded，batch `10221` 声明及 payload 均 3,744 行，但 payload 小时仅 0—12；源日 8 月 14 日任务 `25993` succeeded，batch `10222` 为 0 行。按北京时间窗口汇总仍只有 00:00—03:00 四个非空小时，共 585 行、Requests=95,760、Responses=82,172、Impressions=68,341、Clicks=986、Revenue=2,264.873709。
+- 结论与影响：缺失小时不是未换算日期或任务失败；当前 Google hourly payload 没有其余小时行，中台不能无依据生成。两次小时任务后，8 月 13 日权威日报全部指标及 `updated_at` 不变，无 account 38 active task，源库 `quick_check=ok`。北京时间 8 月 14 日尚未结束，当前结果只能称快照，后续需等待 Google 产生更多行后再次按同一双源日窗口检查。
+- 回滚：当前无需回滚。若两次小时刷新需撤销，必须取得二次授权并先对当前库再做在线备份；从上述写前备份以只读方式提取 account 38、源日 8 月 13/14 的 `site_hourly_reports` 与 `account_hourly_reports` 分区，先现场核对实际表结构、唯一键、外键和引用，再在单一事务中只删除并恢复这四个定向分区。任务 `25992/25993`、batch `10221/10222`、关联日志及日状态引用必须先按 FK 依赖核对；默认保留为审计证据并明确标注“数据分区已回滚”，只有用户另行明确要求撤销审计记录且不存在引用时才定向处理。回滚后复核两个源日分区、北京时间窗口指标、8 月 13 日权威日报全指标及 `updated_at`、无 active task，并执行 `quick_check`。禁止整库恢复或触碰其他账号/日期。
+- Git/发布：仅追加文档；代码与生产配置未发布。提交待生成。
