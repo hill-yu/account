@@ -1073,3 +1073,23 @@ npm run build
 - Git：分支 `codex/oauth-button-layout-fix`；实现提交号以包含本条记录及实现差异的本次提交自身为准。
 - 发布与回滚：已发布并验证。实现提交 `7afd21c` 已快进合并并推送至远程 `master`；过程记录提交 `3df5546`、`3afd574` 也已推送，最终闭环提交以本条提交自身为准。生产写前备份 `/srv/adx-account-isolated-collector/backups/20260813T061039Z-pre-oauth-button-layout-frontend` 为 `ubuntu:ubuntu 0700`，SQLite online backup 大小约 5.30 GB，源库和备份库 `quick_check=ok`，并保存发布前前端、Nginx 配置和 systemd 单元。构建产物共 3 个文件，本地与服务器 staging SHA-256 一致；使用同一 `rsync -a --delete --chmod=D755,F644` 参数先 dry-run，确认仅替换 `index.html` 和两份带 hash 的静态资源后正式同步。生产三文件哈希与本地构建完全一致，权限为 0644；`nginx -t` 通过并仅 reload Nginx，未重启控制面或 scheduler。真实 HTTPS 域名的 HTML、JS、CSS 和 `/health` 均返回 200，下载的三份静态内容 SHA-256 与本地构建一致；Nginx、控制面、scheduler 均 active，控制面与 scheduler 进程各 1，生产数据库最终 `quick_check=ok`。服务器 Git 克隆仍为发布前的干净 `master@ded76b1f`，实际运行目录无 Git；本次授权范围仅为已提交 `master` 构建出的三份前端静态文件，未同步后端或声称整个运行目录等于最新 `master`。若需运行时回滚，仅从上述备份恢复精确 `frontend/dist` 并 reload Nginx，再核对哈希、页面、服务和数据库；代码回滚使用反向提交，不得整库恢复。
 - 发布后只读复核：首次复核误用不存在的 `adx-collector-scheduler.service`，并硬编码发布前构建资源名，因而产生 scheduler `inactive` 和静态文件不存在的假异常；后续两次命令又分别在本机 PowerShell 和 SSH 远端参数拼接层发生正则引号解析错误，均立即停止且未产生生产写。改用 UTF-8 Base64 传递固定只读脚本后，现场确认实际单元 `adx-control-plane-scheduler.service` 为 `loaded/active/running` 且存在 MainPID，Nginx 与控制面 active；当前 `index.html` 实际引用的两份带 hash JS/CSS 均存在，真实 HTTPS 首页与 `/health` 均为 200，生产数据库 `quick_check=ok`，服务器 Git 克隆仍为干净 `ded76b1f`。结论为核验命令目标与引用过期，不是线上服务或静态资源故障；未重启、重新同步或修改生产状态。
+
+### 2026-08-14 — tqchq 8 月 13 日权威日报缺失排查与定向恢复
+
+- 状态：生产定向恢复完成；独立审阅最终 P0/P1/P2 均为 0，允许提交 Git。
+- 目标与授权范围：只读诊断 `tqchq.com`（account/instance 38）北京时间 2026-08-14 小时短缺原因，并仅补齐报告日 2026-08-13 权威日报；未授权小时补拉、schedule/policy/OAuth/代理/服务/代码修改或其他账号操作。
+- 根因：生产 `service.py` 的自动日报候选已按 policy 选择 account 38，但 `should_skip_automatic_data_fetch` 仍要求旧远端 runtime 的 `report_base_url + report_account_key + report_token` 完整。tqchq 使用 direct collector，实例只有 `report_account_key=tqchq`，其余两个旧字段为空，因此自动日报被跳过；小时 direct collector 不经过该旧字段门禁，仍持续成功。截至北京时间 2026-08-14 21:08，小时事实固定使用 `America/Los_Angeles` 源时区：源日 2026-08-13 当前事实为 0—12 时，其中 Pacific 9—12 映射为北京时间 8 月 14 日 00:00—03:00；源日 2026-08-14 的最新成功任务 `25981` 对应 batch 为零行。因此北京时间 8 月 14 日当前仅 4 个非空小时，不是任务失败或日报覆盖小时表，也没有证据可把该快照称为最终完整。
+- 写前门禁与备份：确认账户 `Asia/Hong_Kong`、policy active/gray/hourly/daily/manual 均开启、无 exclusion、OAuth `authorized+healthy` 且 active credential v1、无 account 38 活跃任务、8 月 13 日日报成熟且无成功日报任务。磁盘剩余约 71 GB。在线备份为 `/srv/adx-account-isolated-collector/backups/20260814T131432Z-pre-tqchq-20260813-authoritative-daily/control_plane.db`，大小 5,447,819,264 字节，源库与备份均 `quick_check=ok`。
+- 实施与结果：通过生产实际 SQLAlchemy service，仅为 account/instance 38 创建唯一 `report_fetch` 任务 `25983`（external request ID 脱敏留在数据库），再启动该实例 runtime。任务 `succeeded`；batch `10212`，schema `admanager_site_core_v1`，`full_reset`，6 行。日报 Requests=550,390、Responses=459,577、Impressions=381,445、Clicks=5,811、Revenue=12,650.367685、eCPM=33.164330。完成后无 account 38 活跃任务，源库 `quick_check=ok`。
+- 影响与验证：仅新增该账号该报告日的日报任务、batch 和权威日报事实。小时源日 2026-08-13 仍为 1,816 行、13 个小时、Requests=290,111、`updated_at=2026-08-14 08:38:46`，证明日报补拉未改写小时事实。未扩大至其他节点。
+- 错误、止损与正确替代：见下方逐项记录；所有失败均在日报任务创建前停止，无 SQL 写入、无服务/配置变更、无生产数据影响。
+- 回滚：当前无需回滚。若后续明确授权撤销，先再次在线备份并校验，再按依赖顺序只读确认 account 38 / report date 2026-08-13 的事实行、batch `10212`、task `25983` 及其他引用；仅在无额外依赖时按“日报事实 → batch → task”的定向方案执行，并复核小时基线仍为 rows=1,816、hours=13、Requests=290,111、`updated_at=2026-08-14 08:38:46`，同时确认无活跃任务和 `quick_check=ok`。禁止整库回滚。
+- Git/发布：文档分支 `codex/tqchq-20260813-daily-recovery`，代码与配置无变化；提交待生成，不部署生产代码。
+
+#### 本次失败操作逐项记录
+
+1. **旧工具名**：错误调用为编排层 `tools.shell_command(...)`，当前工具不存在，报 `TypeError` 后立即停止；正确替代为 `tools.exec_command({cmd: ..., workdir: ...})`。验证：后续只读命令正常执行。防再犯：每轮先以当前工具清单为准，不复用旧会话工具名。
+2. **不存在的 systemd 单元**：错误模板把 `systemctl show adx-fetch-scheduler` 与有效控制面检查合并，因单元不存在使整条命令退出非零；未执行 `start/stop/restart`。正确替代为先从实际 systemd/进程证据确认单元名，再分别运行 `systemctl show <实际单元> --property=ActiveState,SubState,WorkingDirectory,EnvironmentFiles --no-pager`。验证：控制面实际路径与真实数据库另行确认。防再犯：禁止从历史名称猜单元。
+3. **跨 shell 引号**：两次错误模板把复杂 `python -c` 嵌套进 PowerShell 与 SSH 双重引号，分别在本机提前解释和远端 shell 报未闭合引号；Python/SQL未执行。正确模板为 `$py=@'...只读 Python...'@; $py | ssh <固定主机与密钥参数> python3 -`。验证：后续 schema、任务与事实查询成功。防再犯：多行 Python 一律 stdin 传递，不再嵌套 `-c`。
+4. **不存在的 Base64 帮助函数**：错误方案在当前 JS 编排环境调用 `btoa`，本机报 `ReferenceError`，SSH未发起。正确替代仍为 stdin 模板；若必须 Base64，只能使用当前环境明确存在且先验证的编码工具。验证：stdin 路径成功。防再犯：不得假定浏览器全局函数存在。
+5. **备份目录权限**：首次以 `ubuntu` 直接 `os.makedirs('/srv/.../backups/<精确目录>')`，报 `PermissionError`，未创建目录或数据库副本。确认目标、磁盘和授权后，正确模板为 `$py | ssh <固定主机与密钥参数> sudo python3 -`，脚本只创建本次精确目录、执行 SQLite online backup、设置 0700/0600 并校验源/备份。验证：备份大小 5,447,819,264 字节，双 `quick_check=ok`。防再犯：写前先核验父目录 owner/mode，不以失败试探权限。
