@@ -66,9 +66,15 @@ export function InstancesSection({
         report_account_key: "",
         report_token: "",
       });
-      await onChanged();
     } catch (error) {
       pushToast({ title: "Failed to create instance", message: getErrorMessage(error as ApiError), tone: "error" });
+      setSubmitting(false);
+      return;
+    }
+    try {
+      await onChanged();
+    } catch {
+      // The resource loader owns the single refresh-failure toast.
     } finally {
       setSubmitting(false);
     }

@@ -146,6 +146,26 @@ def list_tasks(db: Session = Depends(get_db)) -> schemas.SyncTaskList:
     return schemas.SyncTaskList(items=service.list_tasks(db))
 
 
+@router.get("/operator/tasks/paged", response_model=schemas.PaginatedSyncTaskList)
+def list_tasks_paged(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=200),
+    snapshot_max_id: int | None = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+) -> schemas.PaginatedSyncTaskList:
+    if page > 1 and snapshot_max_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="snapshot_max_id is required after the first page",
+        )
+    return service.list_tasks_page(
+        db,
+        page=page,
+        page_size=page_size,
+        snapshot_max_id=snapshot_max_id,
+    )
+
+
 @router.get("/operator/fetch-schedules", response_model=schemas.FetchScheduleList)
 def list_fetch_schedules(db: Session = Depends(get_db)) -> schemas.FetchScheduleList:
     return schemas.FetchScheduleList(items=service.list_fetch_schedules(db))

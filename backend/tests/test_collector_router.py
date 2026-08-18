@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import models as _models  # noqa: F401
@@ -68,6 +68,216 @@ class DummyHttpxResponse:
 
     def json(self) -> dict[str, object]:
         return self._payload
+
+
+def create_task_pagination_records(
+    client: TestClient,
+    *,
+    suffix: str,
+    task_count: int = 205,
+) -> tuple[list[int], Callable[[int], list[int]]]:
+    account_response = client.post(
+        "/api/v1/operator/accounts",
+        json={
+            "name": f"task-pagination-account-{suffix}",
+            "external_account_id": f"test-task-pagination-{suffix}",
+            "status": "active",
+        },
+    )
+    assert account_response.status_code == 201
+    account_id = account_response.json()["id"]
+
+    instance_response = client.post(
+        "/api/v1/operator/instances",
+        json={
+            "account_id": account_id,
+            "name": f"task-pagination-instance-{suffix}",
+            "instance_token": f"test-task-pagination-token-{suffix}",
+            "status": "ready",
+            "expected_egress_ip": "192.0.2.10",
+        },
+    )
+    assert instance_response.status_code == 201
+    instance_id = instance_response.json()["id"]
+
+    next_task_index = 0
+
+    def append_tasks(count: int) -> list[int]:
+        nonlocal next_task_index
+        appended_ids: list[int] = []
+        for _ in range(count):
+            task_response = client.post(
+                "/api/v1/operator/tasks",
+                json={
+                    "account_id": account_id,
+                    "collector_instance_id": instance_id,
+                    "task_type": "report_fetch",
+                    "report_date": "2026-08-18",
+                    "status": "pending",
+                    "external_request_id": f"test-task-pagination-{suffix}-{next_task_index}",
+                },
+            )
+            assert task_response.status_code == 201
+            appended_ids.append(task_response.json()["id"])
+            next_task_index += 1
+        return appended_ids
+
+    return append_tasks(task_count), append_tasks
+
+
+def test_task_pagination_preserves_legacy_list_and_defaults_to_latest_page(client: TestClient) -> None:
+    task_ids, _append_tasks = create_task_pagination_records(client, suffix="defaults")
+
+    legacy_response = client.get("/api/v1/operator/tasks")
+    assert legacy_response.status_code == 200
+    assert set(legacy_response.json()) == {"items"}
+    assert [item["id"] for item in legacy_response.json()["items"]] == task_ids
+
+    response = client.get("/api/v1/operator/tasks/paged")
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload) == {"items", "page", "page_size", "total", "snapshot_max_id"}
+    assert payload["page"] == 1
+    assert payload["page_size"] == 100
+    assert payload["total"] == 205
+    assert payload["snapshot_max_id"] == task_ids[-1]
+    assert [item["id"] for item in payload["items"]] == list(reversed(task_ids[-100:]))
+
+
+def test_task_pagination_keeps_snapshot_stable_until_first_page_refresh(client: TestClient) -> None:
+    task_ids, append_tasks = create_task_pagination_records(client, suffix="snapshot")
+
+    first_response = client.get("/api/v1/operator/tasks/paged")
+    assert first_response.status_code == 200
+    first_page = first_response.json()
+    snapshot_max_id = first_page["snapshot_max_id"]
+
+    new_task_ids = append_tasks(2)
+    second_response = client.get(
+        "/api/v1/operator/tasks/paged",
+        params={"page": 2, "snapshot_max_id": snapshot_max_id},
+    )
+    assert second_response.status_code == 200
+    second_page = second_response.json()
+    assert second_page["snapshot_max_id"] == snapshot_max_id
+    assert second_page["total"] == 205
+    combined_ids = [item["id"] for item in first_page["items"] + second_page["items"]]
+    assert len(combined_ids) == 200
+    assert len(set(combined_ids)) == 200
+    assert combined_ids == list(reversed(task_ids[-200:]))
+    assert not set(new_task_ids).intersection(combined_ids)
+
+    refreshed_response = client.get("/api/v1/operator/tasks/paged")
+    assert refreshed_response.status_code == 200
+    refreshed = refreshed_response.json()
+    assert refreshed["snapshot_max_id"] == new_task_ids[-1]
+    assert refreshed["total"] == 207
+    assert [item["id"] for item in refreshed["items"][:2]] == list(reversed(new_task_ids))
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"page": 0},
+        {"page_size": 0},
+        {"page_size": 201},
+        {"snapshot_max_id": 0},
+        {"page": 2},
+    ],
+)
+def test_task_pagination_rejects_invalid_parameters(client: TestClient, params: dict[str, int]) -> None:
+    response = client.get("/api/v1/operator/tasks/paged", params=params)
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("page_size", [1, 200])
+def test_task_pagination_accepts_page_size_boundaries(client: TestClient, page_size: int) -> None:
+    task_ids, _append_tasks = create_task_pagination_records(client, suffix=f"page-size-{page_size}")
+
+    response = client.get("/api/v1/operator/tasks/paged", params={"page_size": page_size})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["page_size"] == page_size
+    assert len(payload["items"]) == page_size
+    assert [item["id"] for item in payload["items"]] == list(reversed(task_ids[-page_size:]))
+
+
+def test_task_pagination_returns_empty_first_snapshot(client: TestClient) -> None:
+    response = client.get("/api/v1/operator/tasks/paged")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [],
+        "page": 1,
+        "page_size": 100,
+        "total": 0,
+        "snapshot_max_id": 0,
+    }
+
+
+def test_task_pagination_returns_empty_items_after_last_page(client: TestClient) -> None:
+    task_ids, _append_tasks = create_task_pagination_records(client, suffix="past-end")
+
+    response = client.get(
+        "/api/v1/operator/tasks/paged",
+        params={"page": 4, "snapshot_max_id": task_ids[-1]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [],
+        "page": 4,
+        "page_size": 100,
+        "total": 205,
+        "snapshot_max_id": task_ids[-1],
+    }
+
+
+def test_task_pagination_uses_database_count_and_windowing(client: TestClient) -> None:
+    create_task_pagination_records(client, suffix="sql-shape")
+    override = client.app.dependency_overrides[get_db]
+    session_generator = override()
+    session = next(session_generator)
+    engine = session.get_bind()
+    session.close()
+    session_generator.close()
+
+    statements: list[str] = []
+
+    def capture_sql(_conn, _cursor, statement, _parameters, _context, _executemany) -> None:
+        statements.append(" ".join(statement.lower().split()))
+
+    event.listen(engine, "before_cursor_execute", capture_sql)
+    try:
+        response = client.get("/api/v1/operator/tasks/paged?page=1&page_size=100")
+        assert response.status_code == 200
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_sql)
+
+    snapshot_predicate = "collector_sync_tasks.id <="
+    assert any(
+        all(
+            fragment in statement
+            for fragment in ("count(", "from collector_sync_tasks", "where", snapshot_predicate)
+        )
+        for statement in statements
+    )
+    assert any(
+        all(
+            fragment in statement
+            for fragment in (
+                "from collector_sync_tasks",
+                "where",
+                snapshot_predicate,
+                "order by collector_sync_tasks.id desc",
+                "limit",
+                "offset",
+            )
+        )
+        for statement in statements
+    )
 
 
 def test_operator_routes_require_operator_authentication(client: TestClient) -> None:

@@ -63,9 +63,15 @@ export function ProxiesSection({
         expected_egress_ip: "",
         status: "active",
       });
-      await onChanged();
     } catch (error) {
       pushToast({ title: "创建代理绑定失败", message: getErrorMessage(error as ApiError), tone: "error" });
+      setSubmitting(false);
+      return;
+    }
+    try {
+      await onChanged();
+    } catch {
+      // The resource loader owns the single refresh-failure toast.
     } finally {
       setSubmitting(false);
     }

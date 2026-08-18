@@ -60,9 +60,15 @@ export function OAuthAppsSection({
       });
       pushToast({ title: "OAuth app created", tone: "success" });
       setForm((current) => ({ ...current, client_id: "", client_secret: "" }));
-      await onChanged();
     } catch (error) {
       pushToast({ title: "Failed to create OAuth app", message: getErrorMessage(error as ApiError), tone: "error" });
+      setSubmitting(false);
+      return;
+    }
+    try {
+      await onChanged();
+    } catch {
+      // The resource loader owns the single refresh-failure toast.
     } finally {
       setSubmitting(false);
     }
@@ -101,6 +107,13 @@ export function OAuthAppsSection({
         message: getErrorMessage(error as ApiError),
         tone: "error",
       });
+      setGeneratingId(null);
+      return;
+    }
+    try {
+      await onChanged();
+    } catch {
+      // The resource loader reports refresh failures.
     } finally {
       setGeneratingId(null);
     }
@@ -149,13 +162,19 @@ export function OAuthAppsSection({
       });
       setSelectedImportFileName("");
       setImportPayload(null);
-      await onChanged();
     } catch (error) {
       pushToast({
         title: "Failed to import callback JSON",
         message: getErrorMessage(error as ApiError),
         tone: "error",
       });
+      setImporting(false);
+      return;
+    }
+    try {
+      await onChanged();
+    } catch {
+      // The resource loader owns the single refresh-failure toast.
     } finally {
       setImporting(false);
     }

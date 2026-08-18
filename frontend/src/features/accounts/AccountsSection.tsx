@@ -29,9 +29,15 @@ export function AccountsSection({ accounts, onChanged }: { accounts: AccountRead
       });
       pushToast({ title: "账号已创建", tone: "success" });
       setForm({ name: "", external_account_id: "", status: "active" });
-      await onChanged();
     } catch (error) {
       pushToast({ title: "创建账号失败", message: getErrorMessage(error as ApiError), tone: "error" });
+      setSubmitting(false);
+      return;
+    }
+    try {
+      await onChanged();
+    } catch {
+      // The resource loader owns the single refresh-failure toast.
     } finally {
       setSubmitting(false);
     }

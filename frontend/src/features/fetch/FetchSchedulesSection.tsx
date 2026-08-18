@@ -131,12 +131,14 @@ export function FetchSchedulesSection({
   accounts,
   instances,
   schedules,
-  onChanged,
+  onScheduleChanged,
+  onManualFetchChanged,
 }: {
   accounts: AccountRead[];
   instances: InstanceRead[];
   schedules: FetchScheduleRead[];
-  onChanged: () => Promise<void> | void;
+  onScheduleChanged: () => Promise<void> | void;
+  onManualFetchChanged: () => Promise<void> | void;
 }) {
   const { pushToast } = useToast();
   const [saving, setSaving] = useState(false);
@@ -225,9 +227,15 @@ export function FetchSchedulesSection({
         });
       }
 
-      await onChanged();
     } catch (error) {
       pushToast({ title: "Failed to save schedule", message: getErrorMessage(error as ApiError), tone: "error" });
+      setSaving(false);
+      return;
+    }
+    try {
+      await onScheduleChanged();
+    } catch {
+      // The resource loader owns the single refresh-failure toast.
     } finally {
       setSaving(false);
     }
@@ -258,9 +266,15 @@ export function FetchSchedulesSection({
         message: `${result.message ?? result.request_id ?? result.status ?? "fetch.php accepted the request."}${syncMessage}`,
         tone: "success",
       });
-      await onChanged();
     } catch (error) {
       pushToast({ title: "Manual fetch failed", message: getErrorMessage(error as ApiError), tone: "error" });
+      setRunning(false);
+      return;
+    }
+    try {
+      await onManualFetchChanged();
+    } catch {
+      // Invalidation is local, but keep callback failures distinct from mutation failures.
     } finally {
       setRunning(false);
     }

@@ -1138,3 +1138,17 @@ npm run build
 - 计划内容：新增 `docs/superpowers/plans/2026-08-18-operations-page-progressive-loading-implementation.md`，将后端兼容分页、稳定快照测试、前端请求隔离、Tasks 分页 UI、逐资源竞态控制、全量验证、两阶段独立审阅、一次性提交及受控发布拆为九项任务。
 - 治理约束：实现过程中不做中间 Git 提交；完整代码、测试和最终台账经独立审阅 P0/P1 清零后才一次性提交。当前未修改运行代码、未连接生产、未授权生产发布。
 - 计划审阅：首轮独立审阅指出 SQL spy 无法取得 engine、合法分页边界漏测、切回与显式刷新语义混淆、Tasks 缺少 loaded、跨标签写操作缓存失效缺失、pending 清理/错误提示不完整及计划提交策略不闭环；首轮修订后的复审又发现 Fetch 单一回调无法区分 schedule/manual 写后动作，以及 Tasks invalidate 未清 pending 可能复用失效 promise。计划已拆分 Fetch 回调，定义 invalidate 原子清理、陈旧失败不弹 toast及竞态测试；终审 P0/P1/P2 均为 0，允许提交计划与本补充台账。
+
+#### 2026-08-18 实现完成与验证闭环
+
+- 状态：实现、本地验证和两阶段独立审阅完成，待最终一次 Git 提交；未连接生产、未发布。
+- 需求或问题：Operations 页面原先以统一 `Promise.all` 同时等待账户、OAuth 应用及 27,000 余条全量任务等资源，导致 Accounts 与 OAuth Apps 被无关 Tasks 历史阻塞，资源变更后还会重复全量加载。
+- 变更内容：后端保留旧 `/operator/tasks` 全量升序接口及响应结构，新增 `/operator/tasks/paged` 固定快照分页端点，按任务 ID 倒序返回 `items`、`page`、`page_size`、`total` 和 `snapshot_max_id`；前端改为按当前标签依赖渐进加载，使用逐资源 `loaded/loading/error/requestId/pending` 状态隔离错误、去重请求并阻断陈旧响应，Tasks 标签按固定快照分页；账户、OAuth、实例、代理、schedule、手动拉取和任务创建分别按批准的精确失效矩阵刷新或失效，不再触发无关全量请求。
+- 修改原因：解除轻量账户/OAuth 请求与持续增长的任务历史之间的首屏耦合，同时保证标签切换、显式刷新、写后刷新和并发响应具有可预测行为。
+- 实施方案：后端在数据库内先确定快照上界，再以同一 `id <= snapshot_max_id` 条件执行总数与分页查询，并使用 `ORDER BY id DESC`、`LIMIT/OFFSET`，不把全表加载到内存；第一页建立快照，后续页必须携带快照，空库以快照 `0` 表示。前端通过 `useOperationsData` 集中管理资源身份、pending promise、请求序号和 Tasks 分页状态，标签只装载自身依赖；失效时原子递增请求序号并清理 pending/loading/error/缓存，陈旧成功或失败均不得覆盖新状态或重复提示。Fetch schedule 与 manual fetch 使用独立成功回调，确保只执行对应失效动作。
+- 预期结果与实施后果：Accounts 首屏只加载账户，OAuth Apps 复用账户缓存并只补 OAuth 应用，Tasks 仅在激活时分页加载；持续新增任务不会使同一固定快照跨页重复或漏项，显式刷新才建立新快照。旧 Tasks API 保持兼容；新增端点和前端请求编排增加了局部状态与分页逻辑，但无数据库迁移、数据回填或调度行为变化。
+- 影响范围：涉及控制面后端 Tasks 查询 schema/service/router、Operations 页面及账户/OAuth/实例/代理/Fetch/Tasks 前端组件、API 类型与自动化测试。不会修改 collector、OAuth 凭据、代理配置、Google 拉取、schedule、scheduler、数据库表或生产数据；未进行真实账号或代理测试。
+- 验证与测试：TDD 后端首轮 11 个分页契约测试均因新端点尚不存在而得到预期 404 红灯；前端红灯覆盖标签请求隔离、部分失败、显式刷新、请求去重与竞态、Tasks 固定快照翻页和边界。实现后后端全量 `python -m pytest tests -q` 为 176 passed；前端全量 `npm test` 为 49 passed；`npm run build` 成功；`git diff --check` 通过。SQL spy 确认分页查询绑定 `collector_sync_tasks`、固定快照条件及 `DESC/LIMIT/OFFSET`。实现修复过程中新增 mock 一度缺少 `AuthorizationUrlResponse.state`，首次构建按类型检查失败并立即停止；补齐脱敏测试字段后重新构建成功。
+- 独立审阅：红灯测试、后端实现、前端测试和渐进加载实现均完成规格符合性与代码质量复审，最终 P0/P1/P2 均为 0。已关闭的主要问题包括：收紧 SQL spy 到目标表和固定快照查询；补齐反向部分失败、OAuth 无关请求隔离、Fetch 精确失效矩阵、分页边界与 deferred 竞态；以 descriptor 恢复 mock 并使用稳定文本定位；修复 OAuth generate 写后刷新、刷新失败保留缓存、多 mutation 误报与双重请求身份；在 UI 边界消费翻页 rejection、失败时保留原页数据，并在资源加载期间禁用强制刷新。临时可选 props 和 mutation 成功后 refresh 失败误报也已在最终实现中关闭。
+- Git：分支 `codex/frontend-load-performance-diagnosis`；规格提交 `5673ebf`，实现计划提交 `351af83`；本次实现、测试和本条记录的提交号以最终一次提交自身为准。
+- 发布与回滚：尚未推送、集成 `master` 或发布；任何生产发布均须另行获得明确授权，并按 Runbook 从已提交且受控集成的正式 `master` 执行现场 systemd/运行文件/数据库事实复核、备份、健康检查和逐文件一致性验证。常规回滚是在本地对实现提交创建反向提交，经测试和独立审阅后集成 `master`，再按同一受控流程发布；禁止在服务器 Git 克隆或运行目录手工修改源码，不涉及整库回滚。

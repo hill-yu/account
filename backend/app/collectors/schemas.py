@@ -261,6 +261,14 @@ class SyncTaskList(BaseModel):
     items: list[SyncTaskRead]
 
 
+class PaginatedSyncTaskList(BaseModel):
+    items: list[SyncTaskRead]
+    page: int
+    page_size: int
+    total: int
+    snapshot_max_id: int
+
+
 class FetchScheduleCreate(BaseModel):
     account_id: int
     collector_instance_id: int

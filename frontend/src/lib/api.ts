@@ -19,6 +19,7 @@ import type {
   OAuthCallbackResponse,
   OAuthAppCreate,
   OAuthAppList,
+  PaginatedSyncTaskList,
   ProxyBindingCreate,
   ProxyBindingList,
   SiteDailyReportList,
@@ -138,6 +139,13 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   listTasks: () => request<SyncTaskList>("/api/v1/operator/tasks"),
+  listTasksPaged: (page = 1, pageSize = 100, snapshotMaxId?: number) => {
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    if (snapshotMaxId !== undefined) {
+      params.set("snapshot_max_id", String(snapshotMaxId));
+    }
+    return request<PaginatedSyncTaskList>(`/api/v1/operator/tasks/paged?${params}`);
+  },
   createTask: (payload: SyncTaskCreate) =>
     request("/api/v1/operator/tasks", {
       method: "POST",

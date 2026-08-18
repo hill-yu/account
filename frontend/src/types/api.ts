@@ -186,6 +186,14 @@ export interface SyncTaskList {
   items: SyncTaskRead[];
 }
 
+export interface PaginatedSyncTaskList {
+  items: SyncTaskRead[];
+  page: number;
+  page_size: number;
+  total: number;
+  snapshot_max_id: number;
+}
+
 export interface SyncTaskCreate {
   account_id: number;
   collector_instance_id: number;

@@ -14,11 +14,23 @@ export function TasksSection({
   instances,
   tasks,
   onChanged,
+  page,
+  pageSize,
+  total,
+  loading,
+  onPreviousPage,
+  onNextPage,
 }: {
   accounts: AccountRead[];
   instances: InstanceRead[];
   tasks: SyncTaskRead[];
   onChanged: () => Promise<void> | void;
+  page: number;
+  pageSize: number;
+  total: number;
+  loading: boolean;
+  onPreviousPage: () => Promise<void> | void;
+  onNextPage: () => Promise<void> | void;
 }) {
   const { pushToast } = useToast();
   const [submitting, setSubmitting] = useState(false);
@@ -30,6 +42,7 @@ export function TasksSection({
     status: "pending",
     external_request_id: "",
   });
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -45,9 +58,15 @@ export function TasksSection({
       });
       pushToast({ title: "同步任务已创建", tone: "success" });
       setForm((current) => ({ ...current, external_request_id: "" }));
-      await onChanged();
     } catch (error) {
       pushToast({ title: "创建任务失败", message: getErrorMessage(error as ApiError), tone: "error" });
+      setSubmitting(false);
+      return;
+    }
+    try {
+      await onChanged();
+    } catch {
+      // The resource loader owns the single refresh-failure toast.
     } finally {
       setSubmitting(false);
     }
@@ -141,6 +160,19 @@ export function TasksSection({
               ) : null}
             </tbody>
           </table>
+          <div className="table-pagination">
+            <span>
+              第 {page} / {totalPages} 页，共 {total} 条
+            </span>
+            <div>
+              <button type="button" className="secondary-button" disabled={loading || page <= 1} onClick={onPreviousPage}>
+                上一页
+              </button>
+              <button type="button" className="secondary-button" disabled={loading || page >= totalPages} onClick={onNextPage}>
+                下一页
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </SectionCard>

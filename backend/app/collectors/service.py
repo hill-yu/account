@@ -750,6 +750,46 @@ def list_tasks(db: Session) -> list[CollectorSyncTask]:
     return list(db.scalars(select(CollectorSyncTask).order_by(CollectorSyncTask.id)))
 
 
+def list_tasks_page(
+    db: Session,
+    *,
+    page: int,
+    page_size: int,
+    snapshot_max_id: int | None,
+) -> schemas.PaginatedSyncTaskList:
+    """按固定任务 ID 快照分页列出同步任务。"""
+    if snapshot_max_id is None:
+        snapshot_max_id = db.scalar(select(func.max(CollectorSyncTask.id))) or 0
+
+    if snapshot_max_id == 0:
+        return schemas.PaginatedSyncTaskList(
+            items=[],
+            page=page,
+            page_size=page_size,
+            total=0,
+            snapshot_max_id=0,
+        )
+
+    snapshot_filter = CollectorSyncTask.id <= snapshot_max_id
+    total = db.scalar(select(func.count()).select_from(CollectorSyncTask).where(snapshot_filter)) or 0
+    tasks = list(
+        db.scalars(
+            select(CollectorSyncTask)
+            .where(snapshot_filter)
+            .order_by(CollectorSyncTask.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
+    return schemas.PaginatedSyncTaskList(
+        items=tasks,
+        page=page,
+        page_size=page_size,
+        total=total,
+        snapshot_max_id=snapshot_max_id,
+    )
+
+
 # ============================================================================
 # FetchSchedule（抓取调度）CRUD
 # ============================================================================
