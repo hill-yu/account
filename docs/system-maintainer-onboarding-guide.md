@@ -1131,3 +1131,10 @@ npm run build
 - 独立审阅：首轮 P0=0、P1=4、P2=1；修正后复审确认固定快照分页、旧接口兼容、逐资源失败隔离/request ID、受控发布回滚和测试策略均闭环，P0/P1/P2 均为 0，允许提交规格。
 - Git：分支 `codex/frontend-load-performance-diagnosis`，规格提交待生成。
 - 发布与回滚：当前不发布。设计文档回滚使用反向提交；后续实现只从已提交并集成的正式 `master` 发布，无数据库迁移。运行时异常优先使用上一正式 `master` 构建物受控紧急回退，常规回滚使用经测试、独立审阅并集成 `master` 的反向提交，再按 Runbook 同步、逐文件一致性和健康门禁发布；禁止服务器手工改源码。
+
+#### 2026-08-18 实现计划补充
+
+- 规格提交：`5673ebf`。
+- 计划内容：新增 `docs/superpowers/plans/2026-08-18-operations-page-progressive-loading-implementation.md`，将后端兼容分页、稳定快照测试、前端请求隔离、Tasks 分页 UI、逐资源竞态控制、全量验证、两阶段独立审阅、一次性提交及受控发布拆为九项任务。
+- 治理约束：实现过程中不做中间 Git 提交；完整代码、测试和最终台账经独立审阅 P0/P1 清零后才一次性提交。当前未修改运行代码、未连接生产、未授权生产发布。
+- 计划审阅：首轮独立审阅指出 SQL spy 无法取得 engine、合法分页边界漏测、切回与显式刷新语义混淆、Tasks 缺少 loaded、跨标签写操作缓存失效缺失、pending 清理/错误提示不完整及计划提交策略不闭环；首轮修订后的复审又发现 Fetch 单一回调无法区分 schedule/manual 写后动作，以及 Tasks invalidate 未清 pending 可能复用失效 promise。计划已拆分 Fetch 回调，定义 invalidate 原子清理、陈旧失败不弹 toast及竞态测试；终审 P0/P1/P2 均为 0，允许提交计划与本补充台账。
