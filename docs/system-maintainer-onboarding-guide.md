@@ -1201,3 +1201,11 @@ npm run build
 - 备份结构：当前 `backups` 有 24 个一级目录，每个主要是一份约 5.17—6.53 GB 的完整 `control_plane.db`；运行库约 6.53 GB。最新两份为 `20260820T034919Z-pre-reboroots-20260819-hourly-restore`（约 6.51 GB）与本次发布备份 `20260820T081105Z-pre-hourly-snapshot-safety-all-nodes`（约 6.53 GB）。容量根因是连续全量 SQLite 备份长期无保留策略，不是 Git、前端、collector、日志或 inode。
 - 风险与后续：当前只读扫描未继续清理。若仅再删除一个最旧备份，预计释放约 5.17 GB但仍缺乏安全余量；建议先确定保留目标（至少保留本次发布保护点及用户指定的业务恢复点），再按 mtime、精确目录、无符号链接门禁批量删除，经每批 `df` 验证，将使用率降至不高于 85%或至少保留 20 GB。长期应配置保留天数/数量并监控 80%/90% 阈值；删除前后均不得触碰运行库或最新保护点。
 - Git/发布：仅追加只读扫描记录，运行代码仍为 `a84d614`，服务器 Git 克隆已同步至当时文档基线；本记录提交后不重新部署运行代码。
+
+#### 2026-08-20 16:36（北京时间）— 仅保留最近四份生产备份
+
+- 授权与门禁：用户明确要求按时间保留最近 4 个备份目录并永久删除其余 20 个。执行前重新扫描共同父目录 `/srv/adx-account-isolated-collector/backups`，断言恰好 24 个一级真实目录、无符号链接且 resolved parent 均为该父目录；按 `st_mtime_ns` 降序核对保留清单后才执行。
+- 保留目录：`20260820T081105Z-pre-hourly-snapshot-safety-all-nodes`、`20260820T034919Z-pre-reboroots-20260819-hourly-restore`、`20260818T090910Z-pre-theonin-enable-auto-daily`、`20260818T085455Z-pre-theonin-gray-hourly-enable`。
+- 永久删除目录（20 个）：`20260818T085118Z-pre-theonin-health-runtime`、`20260818T084906Z-pre-theonin-policy-active`、`20260818T084729Z-pre-theonin-validation-runtime`、`20260818T083805Z-pre-theonin-callback-exchange`、`20260818T083039Z-pre-theonin-auth-url-regenerate`、`20260818T082848Z-pre-theonin-auth-url-regenerate`、`20260818T080835Z-pre-theonin-callback-exchange`、`20260818T075753Z-pre-theonin-oauth-url`、`20260818T074212Z-pre-sarlvolle-gray-backfill`、`20260818T0732Z-pre-theonin-auth-url-retry`、`20260818T072222Z-pre-sarlvolle-oauth-url`、`20260818T0712Z-pre-theonin-policy-auth-url`、`20260818T063741Z-pre-cwpoole-ldsjys-oauth-reauthorize`、`20260818T060538Z-pre-progressive-loading-deploy`、`20260815T021917Z-pre-tqchq-20260814-daily-20260815-hourly`、`20260814T132737Z-pre-tqchq-bjt-20260814-hourly`、`20260814T131432Z-pre-tqchq-20260813-authoritative-daily`、`20260813T061039Z-pre-oauth-button-layout-frontend`、`20260812T072216Z-pre-linkzclub-backfill`、`20260812T065900Z-pre-linkzclub-callback-exchange`。这些目录不可恢复。
+- 验证与影响：删除脚本逐项输出 20 个目标并在完成后断言 remaining 集合精确等于保留四项；备份目录降至约 24 GB，根分区从 99%/约 3 GB可用降至 26%/约 113 GB可用。运行数据库、`.env`、代码、服务、任务及保留四项未触碰；Web health 正常、Web/scheduler active、生产库最终 `quick_check=ok`。
+- 回滚、Git 与发布：删除本身没有可执行回滚，只能依靠仍保留的四个保护点；未修改运行代码或配置。本记录仅作为治理文档提交并推送，不重新部署。
