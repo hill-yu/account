@@ -477,6 +477,214 @@ def test_hourly_dimension_batch_projects_hourly_facts_without_overwriting_author
     assert preserved_hourly[0].responses_served == 140
 
 
+def _hourly_row(*, hour: int, url_id: str, requests: int) -> dict[str, object]:
+    return {
+        "report_date": "2026-05-21",
+        "hour": hour,
+        "report_time_utc": f"2026-05-22T{hour:02d}:00:00Z",
+        "source_timezone": "America/Los_Angeles",
+        "currency": "USD",
+        "url_id": url_id,
+        "url": f"https://example.com/{url_id}",
+        "ad_country_code": "US",
+        "ad_country_name": "United States",
+        "ad_slot_id": "slot-top",
+        "ad_slot_name": "Top Banner",
+        "responses_served": requests,
+        "requests": requests,
+        "impressions": requests,
+        "clicks": 0,
+        "revenue": "0.000000",
+    }
+
+
+def test_hourly_smaller_snapshot_preserves_unreturned_hours_and_dimension_keys(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    task_id, token = _seed_task(test_client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    first_rows = [
+        _hourly_row(hour=hour, url_id=url_id, requests=10)
+        for hour in range(19)
+        for url_id in ("url-a", "url-b")
+    ]
+    first = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers=headers,
+        json={
+            "batch_key": "hourly-large",
+            "row_count": len(first_rows),
+            "payload_hash": "hourly-large-hash",
+            "schema_version": "admanager_hourly_dimension_v1",
+            "merge_mode": "replace_touched_hours",
+            "touched_hours": list(range(24)),
+            "expected_hour_count": 24,
+            "rows": first_rows,
+        },
+    )
+    assert first.status_code == 201
+
+    second_task_id = test_client.post(
+        "/api/v1/operator/tasks",
+        json={
+            "account_id": 1,
+            "collector_instance_id": 1,
+            "task_type": "report_fetch_hourly",
+            "report_date": "2026-05-21",
+            "status": "pending",
+        },
+    ).json()["id"]
+    smaller_rows = [_hourly_row(hour=hour, url_id="url-a", requests=20) for hour in range(10)]
+    second = test_client.post(
+        f"/api/v1/collector/tasks/{second_task_id}/batches",
+        headers=headers,
+        json={
+            "batch_key": "hourly-small",
+            "row_count": len(smaller_rows),
+            "payload_hash": "hourly-small-hash",
+            "schema_version": "admanager_hourly_dimension_v1",
+            "merge_mode": "replace_touched_hours",
+            "touched_hours": list(range(24)),
+            "expected_hour_count": 24,
+            "rows": smaller_rows,
+        },
+    )
+    assert second.status_code == 201
+
+    with session_factory() as session:
+        rows = list(session.scalars(select(SiteHourlyReport)))
+        second_batch = session.scalar(
+            select(CollectorIngestionBatch).where(CollectorIngestionBatch.task_id == second_task_id)
+        )
+
+    assert {row.hour for row in rows} == set(range(19))
+    assert len(rows) == 38
+    assert next(row for row in rows if row.hour == 0 and row.url_id == "url-a").requests == 20
+    assert next(row for row in rows if row.hour == 0 and row.url_id == "url-b").requests == 10
+    assert second_batch is not None
+    assert second_batch.merge_mode == "replace_touched_hours"
+    assert json.loads(second_batch.touched_hours_json or "null") == list(range(24))
+    assert second_batch.expected_hour_count == 24
+
+
+@pytest.mark.parametrize(
+    "merge_mode,touched_hours,expected_hour_count",
+    [
+        ("delete_everything", [9], 24),
+        ("replace_touched_hours", [9, 9], 24),
+        ("replace_touched_hours", [24], 24),
+    ],
+)
+def test_hourly_batch_rejects_unsafe_merge_metadata_without_partial_write(
+    client: tuple[TestClient, sessionmaker[Session]],
+    merge_mode: str,
+    touched_hours: list[int],
+    expected_hour_count: int,
+) -> None:
+    test_client, session_factory = client
+    task_id, token = _seed_task(test_client)
+    response = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "batch_key": "unsafe-hourly",
+            "row_count": 1,
+            "payload_hash": "unsafe-hourly-hash",
+            "schema_version": "admanager_hourly_dimension_v1",
+            "merge_mode": merge_mode,
+            "touched_hours": touched_hours,
+            "expected_hour_count": expected_hour_count,
+            "rows": [_hourly_row(hour=9, url_id="url-a", requests=10)],
+        },
+    )
+    assert response.status_code == 422
+    with session_factory() as session:
+        assert session.scalar(select(CollectorIngestionBatch.id)) is None
+        assert session.scalar(select(SiteHourlyReport.id)) is None
+
+
+def test_legacy_hourly_batch_retry_keeps_full_reset_metadata_identity(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    task_id, token = _seed_task(test_client)
+    rows = [_hourly_row(hour=9, url_id="url-a", requests=10)]
+    payload_json = json.dumps(rows, separators=(",", ":"), sort_keys=True)
+    with session_factory.begin() as session:
+        session.add(
+            CollectorIngestionBatch(
+                task_id=task_id,
+                account_id=1,
+                batch_key="legacy-hourly",
+                row_count=1,
+                payload_hash="legacy-hash",
+                schema_version="admanager_hourly_dimension_v1",
+                merge_mode="full_reset",
+                touched_hours_json=None,
+                expected_hour_count=24,
+                payload_json=payload_json,
+            )
+        )
+
+    response = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "batch_key": "legacy-hourly",
+            "row_count": 1,
+            "payload_hash": "legacy-hash",
+            "schema_version": "admanager_hourly_dimension_v1",
+            "rows": rows,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["duplicate"] is True
+
+
+def test_hourly_merge_metadata_accepts_dst_civil_hour_23_on_23_hour_day(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, _ = client
+    task_id, token = _seed_task(test_client)
+    response = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "batch_key": "spring-forward-hour-23",
+            "row_count": 1,
+            "payload_hash": "spring-forward-hash",
+            "schema_version": "admanager_hourly_dimension_v1",
+            "merge_mode": "replace_touched_hours",
+            "touched_hours": [23],
+            "expected_hour_count": 23,
+            "rows": [_hourly_row(hour=23, url_id="url-a", requests=10)],
+        },
+    )
+    assert response.status_code == 201
+
+
+def test_non_hourly_batch_is_not_rejected_by_hourly_expected_hour_count_rules(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, _ = client
+    task_id, token = _seed_task(test_client)
+    response = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "batch_key": "daily-unrelated-hour-count",
+            "row_count": 0,
+            "payload_hash": "daily-unrelated-hour-count-hash",
+            "schema_version": "admanager_site_core_v1",
+            "expected_hour_count": 1,
+            "rows": [],
+        },
+    )
+    assert response.status_code == 201
+
+
 def test_daily_dimension_snapshot_replaces_stale_rows_after_core_batch(
     client: tuple[TestClient, sessionmaker[Session]],
 ) -> None:

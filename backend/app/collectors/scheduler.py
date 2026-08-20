@@ -17,8 +17,10 @@ from app.models.fetch_schedule import FetchSchedule
 
 STALE_IN_PROGRESS_TASK_AGE = timedelta(hours=2)
 CROSS_DAY_FINALIZE_START_HOUR = 1
-CROSS_DAY_FINALIZE_END_HOUR = 3
-CROSS_DAY_FINALIZE_MAX_ATTEMPTS = 2
+CROSS_DAY_FINALIZE_END_HOUR = 4
+CROSS_DAY_FINALIZE_EVALUATION_END_HOUR = 6
+CROSS_DAY_FINALIZE_MAX_ATTEMPTS = 3
+CROSS_DAY_FINALIZE_MIN_STABLE_HOUR = 3
 
 
 def utcnow() -> datetime:
@@ -138,7 +140,9 @@ class FetchScheduler:
                     instance is not None
                     and get_settings().direct_collector_only
                     and instance.report_account_key in enabled_account_keys
-                    and CROSS_DAY_FINALIZE_START_HOUR <= source_now.hour < CROSS_DAY_FINALIZE_END_HOUR
+                    and CROSS_DAY_FINALIZE_START_HOUR
+                    <= source_now.hour
+                    < CROSS_DAY_FINALIZE_EVALUATION_END_HOUR
                 ):
                     previous_report_date = source_now.date() - timedelta(days=1)
                     attempts = service.list_cross_day_finalize_attempts(
@@ -146,19 +150,33 @@ class FetchScheduler:
                         account_id=schedule.account_id,
                         report_date=previous_report_date,
                     )
-                    if not any(task.status in {"succeeded", "blocked"} for task in attempts):
+                    valid_watermarks = service.cross_day_finalize_observation_watermarks(attempts)
+                    is_stable = (
+                        source_now.hour >= CROSS_DAY_FINALIZE_MIN_STABLE_HOUR
+                        and len(valid_watermarks) >= 2
+                        and valid_watermarks[-1] == valid_watermarks[-2]
+                    )
+                    if not is_stable and not any(task.status == "blocked" for task in attempts):
                         active_attempt = next(
                             (task for task in attempts if task.status in {"pending", "in_progress"}),
                             None,
                         )
-                        failed_count = sum(task.status in {"failed", "cancelled"} for task in attempts)
-                        if active_attempt is not None or failed_count < CROSS_DAY_FINALIZE_MAX_ATTEMPTS:
+                        may_create_attempt = source_now.hour < CROSS_DAY_FINALIZE_END_HOUR
+                        if active_attempt is not None and may_create_attempt:
                             report_date = previous_report_date
                             run_reason = "cross_day_finalize"
+                            attempt_number = attempts.index(active_attempt) + 1
                             external_request_id = (
-                                f"hourly-finalize-{schedule.account_id}-{report_date.isoformat()}-{failed_count + 1}"
+                                f"hourly-finalize-{schedule.account_id}-{report_date.isoformat()}-{attempt_number}"
                             )
-                        else:
+                        elif len(attempts) < CROSS_DAY_FINALIZE_MAX_ATTEMPTS and may_create_attempt:
+                            report_date = previous_report_date
+                            run_reason = "cross_day_finalize"
+                            attempt_number = len(attempts) + 1
+                            external_request_id = (
+                                f"hourly-finalize-{schedule.account_id}-{report_date.isoformat()}-{attempt_number}"
+                            )
+                        elif len(attempts) >= CROSS_DAY_FINALIZE_MAX_ATTEMPTS and active_attempt is None:
                             service.record_cross_day_finalize_exhausted(
                                 db,
                                 account_id=schedule.account_id,

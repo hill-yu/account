@@ -44,6 +44,8 @@ def ingest_batch(
         supplied_version=payload.credential_version,
     )
 
+    merge_mode, touched_hours, expected_hour_count = _normalize_merge_metadata(payload)
+    touched_hours_json = json.dumps(touched_hours, separators=(",", ":")) if touched_hours is not None else None
     payload_json = json.dumps(payload.rows, separators=(",", ":"), sort_keys=True) if payload.rows is not None else None
     existing = db.scalar(
         select(CollectorIngestionBatch).where(
@@ -56,6 +58,9 @@ def ingest_batch(
             existing.row_count != payload.row_count
             or existing.payload_hash != payload.payload_hash
             or existing.schema_version != payload.schema_version
+            or existing.merge_mode != merge_mode
+            or existing.touched_hours_json != touched_hours_json
+            or existing.expected_hour_count != expected_hour_count
             or existing.payload_json != payload_json
         ):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Batch key already used with different payload")
@@ -78,6 +83,9 @@ def ingest_batch(
         row_count=payload.row_count,
         payload_hash=payload.payload_hash,
         schema_version=payload.schema_version,
+        merge_mode=merge_mode,
+        touched_hours_json=touched_hours_json,
+        expected_hour_count=expected_hour_count,
         payload_json=payload_json,
     )
     db.add(batch)
@@ -88,6 +96,8 @@ def ingest_batch(
             schema_version=payload.schema_version,
             rows=payload.rows,
             reset_existing=is_first_batch_for_schema,
+            merge_mode=merge_mode,
+            touched_hours=touched_hours,
         )
         db.commit()
     except IntegrityError as exc:
@@ -104,6 +114,9 @@ def ingest_batch(
             existing.row_count != payload.row_count
             or existing.payload_hash != payload.payload_hash
             or existing.schema_version != payload.schema_version
+            or existing.merge_mode != merge_mode
+            or existing.touched_hours_json != touched_hours_json
+            or existing.expected_hour_count != expected_hour_count
             or existing.payload_json != payload_json
         ):
             raise HTTPException(
@@ -123,6 +136,8 @@ def _project_payload_if_supported(
     schema_version: str | None,
     rows: list[dict[str, Any]] | None,
     reset_existing: bool,
+    merge_mode: str,
+    touched_hours: list[int] | None,
 ) -> None:
     if not rows:
         return
@@ -163,8 +178,13 @@ def _project_payload_if_supported(
             _normalize_admanager_hourly_site_row(row, report_date=task.report_date, account=account)
             for row in rows
         ]
-        if reset_existing:
-            _reset_hourly_projection(db, account_id=task.account_id, report_date=task.report_date)
+        # Hourly data is an evolving Google snapshot.  A later successful
+        # response can be smaller than an earlier one, so neither legacy
+        # full_reset nor declared touched hours may delete facts absent from
+        # this payload.  Existing dimension keys are updated below and
+        # previously observed keys remain until a separately verified final
+        # snapshot is available.
+        del reset_existing, merge_mode, touched_hours
 
         for row in normalized_rows:
             existing = db.scalar(
@@ -248,6 +268,39 @@ def _project_payload_if_supported(
         db.flush()
         _rebuild_account_daily_dimension_reports(db, account_id=task.account_id, report_date=task.report_date)
         return
+
+
+def _normalize_merge_metadata(
+    payload: schemas.BatchIngestionRequest,
+) -> tuple[str, list[int] | None, int]:
+    expected_hour_count = payload.expected_hour_count if payload.expected_hour_count is not None else 24
+    if payload.schema_version != "admanager_hourly_dimension_v1":
+        return payload.merge_mode or "full_reset", payload.touched_hours, expected_hour_count
+
+    if isinstance(expected_hour_count, bool) or not 23 <= expected_hour_count <= 25:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid expected_hour_count",
+        )
+
+    merge_mode = payload.merge_mode or "full_reset"
+    if merge_mode not in {"replace_touched_hours", "full_reset"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid hourly merge_mode",
+        )
+
+    touched_hours = payload.touched_hours
+    if touched_hours is not None:
+        if len(touched_hours) != len(set(touched_hours)) or any(
+            isinstance(hour, bool) or hour < 0 or hour > 23 for hour in touched_hours
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid touched_hours",
+            )
+
+    return merge_mode, touched_hours, expected_hour_count
 
 
 def _normalize_admanager_daily_dimension_row(row: dict[str, Any], *, report_date: date, account: Account) -> dict[str, Any]:

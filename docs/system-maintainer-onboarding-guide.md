@@ -1161,3 +1161,23 @@ npm run build
 - 运行影响与验证：scheduler unit 实际 `Requires=adx-control-plane.service`，因此 Web restart 被 systemd 自动连带重启 scheduler 一次；未显式重启 scheduler，未修改 schedule、policy、灰度或任务范围。该窗口既有 schedule 正常产生两个 `report_fetch_hourly/preview` 任务并均 succeeded；没有创建手工任务。最终 Web 与 scheduler 均 active/running，Web `/health` 正常，新 `/operator/tasks/paged` 以服务器进程内 Operator Token 完成只读响应契约检查且未回显 Token。真实 HTTPS 首页、health、新 JS 和 CSS 均为 200，三份静态内容 SHA-256 与本地 `master` 构建一致；最终数据库 `quick_check=ok`。
 - 错误与替代：首次多行 SSH 只读脚本在末行遇到 CRLF 导致 Bash `unexpected end of file`；拆为短命令并以 LF stdin 复核。对非 Git 运行目录执行 `git -C` 立即失败，随后只在 `/srv` 有限深度定位实际 Git 克隆，并以统一 LF 哈希确认运行文件与当时克隆内容一致。备份命令最后的 `df` 参数受 CR 影响失败，但 online backup、双 `quick_check` 和受控文件备份均已先完成，随后用独立只读命令复核。一次 Git blob 循环被 PowerShell 提前解释管道字符，并在本地生成一个名为 `=` 的 0 字节未跟踪文件；确认创建时间、大小和未跟踪状态后仅删除该精确空文件，正确替代为逐文件、整体引用的目标提交 blob 比较。一次 SQLite 明细命令因跨 shell 引号失败，改用只读 Python stdin。所有失败均立即停止；除已清理的本地空文件外，未产生额外源码、配置、数据库或任务写入。
 - 发布与回滚：本次已发布。紧急回退使用上述备份中精确 3 个后端文件和前端 `dist`，按相同 staging、dry-run、同步、Alembic/health/HTTPS/文件一致性流程恢复，并只重启 Web；需预期 systemd 依赖会连带重启 scheduler。常规代码回滚仍应在本地对 `9192359` 创建反向提交，完成测试、独立审阅并集成 `master` 后受控发布。无数据库迁移，不使用整库恢复；除非数据库另有损坏证据，否则 online backup 仅作保护点。
+
+### 2026-08-20 15:18—16:00（北京时间）— 小时快照防倒退最小修复 TDD 实现
+
+- 状态：本地 TDD 实现完成，等待独立审阅；未提交、未发布、未连接生产。
+- 需求或问题：`reboroots` 已证实后一次较小 Google 小时快照被 `full_reset` 写入后删除较完整事实；现有跨日 scheduler 又把第一次 succeeded 当作完成。用户批准按“速度快、改动量小”的一期方案开发。
+- 变更内容：小时 ingestion 复用既有 `merge_mode/touched_hours/expected_hour_count` 字段，校验并持久化元数据；小时 schema 不再删除 payload 未返回的小时或维度键，只 upsert 相同键并从合并后 site facts 重建 account hourly。跨日窗口扩展到 Pacific 01:00—03:59，最多 3 次；只有已到 03 时且最近两次 succeeded 任务均有合法 hourly batch、水位一致时停止，否则继续下一 observation 或写唯一 exhausted 标记。
+- 修改原因：阻止传输成功但数据缩减的快照破坏既有事实，同时避免一次部分成功过早终止跨日回查；不引入迁移、API、前端、`user_system` 或独立 producer。
+- 实施方案与影响：旧 collector 的 `full_reset` 在小时 schema 下按安全 upsert 执行；空 payload 不删除。代价是上游真实撤销但暂未确认的维度键会暂时保留，可能短期高估；跨日最多三周期会短暂延迟当前源日水位。日报 schema 与四张权威日报表保持隔离。
+- TDD 证据：ingestion 红灯为 4 failed/6 passed，准确复现 0—18 被缩成 0—9及三类非法合并元数据被错误接受；最小实现后 10 passed。scheduler 新增定向红灯为 3 failed/1 passed，准确证明单次 succeeded 或无 batch 任务过早回到 preview；实现和既有契约更新后 `test_fetch_scheduler.py` 为 37 passed。
+- 错误闭环：首次从脏主目录执行 handoff Create，发现 `scripts/project-handoff.ps1` 未受 Git 跟踪且文件不存在，命令失败；未创建分支/worktree、未覆盖主目录修改。根因是把主目录误当正式 master worktree。正确替代是在实际 master worktree `oauth-button-layout-master-integration` 运行受跟踪脚本，成功从 `origin/master@81ca617` 创建当前干净任务 worktree。随后一次跨两份长文档的补丁使用了截断输出中的不存在锚点，补丁被整体拒绝、无部分写入；正确替代为先读取各文件真实末尾，再逐文件精确追加。防再犯：先定位正式 worktree/受跟踪门禁；长文档不得使用截断输出作为补丁锚点。
+- 验证、审阅、Git：目前仅完成两组针对性测试；正在独立审阅，未运行全量测试。分支 `codex/hourly-snapshot-safety-fix`，提交号待生成。无密码、Token、OAuth、代理或生产数据写入。
+- 发布与回滚：本轮未授权部署。代码回滚使用后续反向提交并重跑同组测试；由于无 migration，不涉及数据库降级。生产灰度若获另行授权，必须先备份、仅 `reboroots`、验证事实不缩减/日报不变/任务上限/当前日追平后再扩大。
+
+#### 2026-08-20 16:18（北京时间）— 小时快照防倒退修复终审与全量验证闭环
+
+- 独立审阅与整改：首轮审阅发现 3 个 P1：第三次跨日观察在 Pacific 03 时创建后缺少后续判定窗口；旧 collector 缺省 `merge_mode` 的在途 batch 会因元数据身份变化而 409；稳定性错误依赖 batch hash/元数据而非确定性事实水位。另发现 DST civil hour 校验错误。已按 TDD 修正为：创建窗口仍为 Pacific `[01,04)`，评估窗口有界扩展到 `[01,06)`；缺省元数据身份继续保持 legacy `full_reset`，但小时投影始终安全 upsert；稳定水位按合法 payload 的维度键和值规范化累计比较；civil hour 固定校验 0—23，expected count 仅在 hourly schema 校验 23—25。
+- 后续审阅整改：审阅提出 Pacific 04 以后全日重复解析 payload 的性能风险，以及 hourly expected count 误约束非 hourly schema 的兼容风险。已把跨日评估限制在 Pacific `[01,06)`，并将 23—25 校验移入 hourly 分支；新增 Pacific 06 停止扫描和非 hourly `expected_hour_count=1` 回归测试。第三次结果可在 04/05 时被判稳或在 active 超时回收后写唯一 exhausted，06 时以后不再扫描。
+- 错误操作闭环：新增 scheduler 测试时首次补丁漏写一个右括号，pytest 在收集阶段报 `SyntaxError: '(' was never closed`；这不是有效 TDD 红灯。该错误仅修改本地测试文件，未运行产品逻辑、未连接生产、未产生数据库或服务写入。发现后立即停止，将目标测试函数完整读回并补齐括号，再确认测试能被收集并取得预期行为红灯。防再犯：修改较长 fixture/call 表达式后先运行单文件收集或目标测试，语法通过后才把失败计作产品红灯。
+- 最终验证：独立终审 P0/P1/P2 均为 0；针对性测试 53 passed；后端全量 `python -m pytest tests -q` 为 190 passed；collector 全量为 89 passed；`git diff --check` 通过。日报写入路径、API、前端、migration、OAuth、代理和生产配置均未修改，未执行真实账号或生产测试。
+- 状态、Git 与发布：本地代码与测试已完成，整体状态仍为“生产未发布”。分支 `codex/hourly-snapshot-safety-fix`，提交号以包含本条记录的本次统一提交自身为准；未 push、未合并 `master`、未部署。回滚使用后续反向提交；任何生产灰度仍需用户另行授权、写前备份、仅 `reboroots` 验证后再决定是否扩大。

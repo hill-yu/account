@@ -1169,6 +1169,56 @@ def list_cross_day_finalize_attempts(
     )
 
 
+def cross_day_finalize_observation_watermarks(
+    attempts: list[CollectorSyncTask],
+) -> list[tuple[tuple[object, ...], ...]]:
+    """Build cumulative, normalized hourly fact watermarks for valid observations."""
+    merged: dict[tuple[str, str, str, str], str] = {}
+    watermarks: list[tuple[tuple[object, ...], ...]] = []
+    for task in attempts:
+        if task.status != "succeeded":
+            continue
+        hourly_batches = sorted(
+            (
+                batch
+                for batch in task.ingestion_batches
+                if batch.schema_version == "admanager_hourly_dimension_v1"
+            ),
+            key=lambda batch: batch.id,
+        )
+        if not hourly_batches:
+            continue
+        observation_rows: list[dict[str, object]] = []
+        valid = True
+        for batch in hourly_batches:
+            try:
+                rows = json.loads(batch.payload_json) if batch.payload_json is not None else []
+            except (TypeError, json.JSONDecodeError):
+                valid = False
+                break
+            if not isinstance(rows, list) or len(rows) != batch.row_count or not all(isinstance(row, dict) for row in rows):
+                valid = False
+                break
+            observation_rows.extend(rows)
+        if not valid:
+            continue
+        candidate = merged.copy()
+        try:
+            for row in observation_rows:
+                key = (
+                    str(row["url_id"]),
+                    str(row["report_time_utc"]),
+                    str(row.get("ad_country_code", "ALL")),
+                    str(row.get("ad_slot_id", "ALL")),
+                )
+                candidate[key] = json.dumps(row, sort_keys=True, separators=(",", ":"), default=str)
+        except (KeyError, TypeError, ValueError):
+            continue
+        merged = candidate
+        watermarks.append(tuple(sorted((*key, value) for key, value in merged.items())))
+    return watermarks
+
+
 def record_cross_day_finalize_exhausted(
     db: Session,
     *,
