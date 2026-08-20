@@ -1193,3 +1193,11 @@ npm run build
 - 发布后真实周期：scheduler 恢复后的前三个到期 schedule 均自动完成：任务 `28132/28133/28134`（account `39/41/43`）分别于北京时间 16:21—16:23 创建，均为 `report_fetch_hourly/preview`、credential v1、succeeded；batch `12256/12257/12258` 均为 `admanager_hourly_dimension_v1`，row_count 分别 `277/76/2`，`merge_mode=replace_touched_hours`、`expected_hour_count=24`。没有新增 failed/blocked/in_progress；18 条 active 均为 8 月 1—2 日遗留 pending，与发布前数量一致。本证据证明新 Web ingestion 与 scheduler 能完成真实任务/batch 链路，但不把当前源日 preview 冒充跨日三次判稳实证；跨日窗口仍须继续按任务/batch观察。
 - 回滚与状态：运行异常时先停止 scheduler，从上述备份只恢复精确三文件，再执行内存编译、Alembic、Web health、启动 scheduler、文件 hash 和数据库 quick-check；不得整库恢复。代码常规回滚使用对 `a84d614` 的反向提交并重新受控发布。当前全节点共享代码发布与首个真实周期验证均完成；仅文档闭环提交不会再次部署。
 - 文档闭环同步补充：发布记录提交 `cfb5aaa` 推送后，首次尝试同步服务器 Git 克隆时把远端 `$(git ...)` 放入本机 PowerShell 双引号字符串，命令替换被本机提前执行并报 `/srv/...` 不存在，SSH 更新未执行、生产无变化。改用单引号 LF stdin 后服务器克隆成功快进至干净 `master@cfb5aaa`，Web health 与两服务 active；但脚本最后一行再次因管道附加的 CR 使 `df` 路径带 `\r` 而非零，前述 Git/health/service 步骤已完成且未回滚。最终以独立短命令复核磁盘仍为 99%、约 3.0 GB 可用。防再犯：PowerShell 外层不得包含未转义远端命令替换；即使正文替换 CRLF，管道仍可能在 EOF 添加 CRLF，因此最后一个关键验证必须独立执行。
+
+#### 2026-08-20 16:33（北京时间）— 发布后磁盘只读容量扫描
+
+- 授权与写入边界：用户要求继续扫描当前磁盘；本轮仅执行 `df/du/find` 只读命令，没有删除、移动、压缩或修改任何文件、数据库、服务和任务。
+- 证据：根分区 ext4 为 158 GB，已用 148 GB、可用约 3.0 GB、使用率 99%；inode 仅使用 2%，不是 inode 耗尽。`/srv` 占 150,090,276,864 字节，其中运行项目占 149,723,299,840 字节；项目内 `backups` 占 142,823,772,160 字节，backend 占 6,657,134,592 字节，其他目录均低于约 127 MB。`/var` 总占用约 2.03 GB，其中日志约 1.12 GB，不是主要矛盾。
+- 备份结构：当前 `backups` 有 24 个一级目录，每个主要是一份约 5.17—6.53 GB 的完整 `control_plane.db`；运行库约 6.53 GB。最新两份为 `20260820T034919Z-pre-reboroots-20260819-hourly-restore`（约 6.51 GB）与本次发布备份 `20260820T081105Z-pre-hourly-snapshot-safety-all-nodes`（约 6.53 GB）。容量根因是连续全量 SQLite 备份长期无保留策略，不是 Git、前端、collector、日志或 inode。
+- 风险与后续：当前只读扫描未继续清理。若仅再删除一个最旧备份，预计释放约 5.17 GB但仍缺乏安全余量；建议先确定保留目标（至少保留本次发布保护点及用户指定的业务恢复点），再按 mtime、精确目录、无符号链接门禁批量删除，经每批 `df` 验证，将使用率降至不高于 85%或至少保留 20 GB。长期应配置保留天数/数量并监控 80%/90% 阈值；删除前后均不得触碰运行库或最新保护点。
+- Git/发布：仅追加只读扫描记录，运行代码仍为 `a84d614`，服务器 Git 克隆已同步至当时文档基线；本记录提交后不重新部署运行代码。
