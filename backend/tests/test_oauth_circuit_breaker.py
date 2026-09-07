@@ -87,13 +87,17 @@ def _seed_account(db: Session, *, runtime_status: str = "healthy", excluded: boo
     return account, instance, oauth_app, policy, schedule
 
 
-def test_refresh_revoked_revalidates_once_then_opens_circuit(tmp_path: Path) -> None:
+@pytest.mark.parametrize("failed_task_type", ["report_fetch_hourly", "report_fetch_daily_dimension"])
+def test_refresh_revoked_revalidates_once_then_opens_circuit(
+    tmp_path: Path,
+    failed_task_type: str,
+) -> None:
     db = _session(tmp_path)
     account, instance, oauth_app, policy, schedule = _seed_account(db)
     failed_task = CollectorSyncTask(
         account_id=account.id,
         collector_instance_id=instance.id,
-        task_type="report_fetch_hourly",
+        task_type=failed_task_type,
         report_date=date(2026, 7, 30),
         status="in_progress",
         external_request_id="failed-hourly",

@@ -45,7 +45,7 @@ return () if batch is None else (batch,)
 
 ## 任务 2：控制面人工维度任务
 
-- [ ] 在 `backend/tests/test_collector_router.py` 先写红灯，覆盖端点 `/api/v1/operator/fetch-schedules/manual-daily-dimension-fetch`：成熟且核心成功时创建 `report_fetch_daily_dimension` 并启动对应实例 runtime；active 任务复用；既有 failed 任务允许新建；未成熟、核心未成功、实例不匹配分别返回 409/400。
+- [ ] 在 `backend/tests/test_collector_router.py` 先写红灯，覆盖端点 `/api/v1/operator/fetch-schedules/manual-daily-dimension-fetch`：成熟且核心成功时创建 `report_fetch_daily_dimension` 并启动对应实例 runtime；同实例 active 任务复用；异常跨实例 active 和非 direct 模式返回 409；既有 failed 任务允许以确定性 attempt id 新建；未成熟、核心未成功、请求实例不匹配分别返回 409/400。
 - [ ] 在 `backend/tests/test_fetch_policy.py` 写红灯，证明 `manual_fetch_enabled=false` 拒绝 `manual_daily_dimension`。
 - [ ] 运行精确测试节点，预期因端点/函数不存在返回 404 或断言失败。
 - [ ] 在 `backend/app/collectors/fetch_policy.py` 将 `manual_daily_dimension` 加入 `MANUAL_FETCH_KINDS`。
@@ -61,22 +61,23 @@ class ManualDailyDimensionFetchResponse(BaseModel):
     dimension_sync_task_created: bool
 ```
 
-- [ ] 在 `backend/app/collectors/service.py` 增加 `_find_active_daily_dimension_sync_task`、`has_daily_dimension_attempt`、`_get_or_create_daily_dimension_sync_task`、`_create_daily_dimension_sync_task` 和 `trigger_manual_daily_dimension_fetch`。成熟时间必须复用 `is_authoritative_daily_ready`；核心前置必须复用 `has_successful_authoritative_daily_fetch`；任务凭据版本必须复用 `_active_credential_version_for_task`。
-- [ ] 在 `backend/app/collectors/router.py` 增加独立 POST 端点，使用既有 timeout/direct-collector 设置，不修改原 `/manual-fetch`。
+- [ ] 在 `backend/app/collectors/service.py` 增加 `_find_active_daily_dimension_sync_task`、`has_daily_dimension_attempt`、`_get_or_create_daily_dimension_sync_task`、`_create_daily_dimension_sync_task` 和 `trigger_manual_daily_dimension_fetch`。成熟时间必须复用 `is_authoritative_daily_ready`；核心前置必须复用 `has_successful_authoritative_daily_fetch`；任务凭据版本必须复用 `_active_credential_version_for_task`；人工 attempt id 必须确定性生成并在唯一键冲突后严格匹配回读。
+- [ ] 在 `backend/app/collectors/router.py` 增加独立 POST 端点，明确只支持 direct collector，不修改原 `/manual-fetch`。
 - [ ] 把 `report_fetch_daily_dimension` 加入 `complete_task` 的 OAuth refresh revoked 数据任务集合。
 - [ ] 重跑上述精确测试，预期全通过。
 
 ## 任务 3：默认关闭的自动维度调度
 
-- [ ] 在 `backend/tests/test_fetch_scheduler.py` 写红灯，覆盖：默认空 allowlist 不创建维度任务；allowlist 账号在成熟且核心成功后创建一个维度任务；无核心成功不创建；任意 succeeded/failed/pending/in_progress 维度尝试都不自动重复；非 allowlist 账号不创建。
+- [ ] 在 `backend/tests/test_fetch_scheduler.py` 写红灯，覆盖：默认空 allowlist 不创建维度任务；allowlist 账号只为最新成熟且核心成功的业务日创建一个维度任务；无核心成功不创建；pending 任务每轮可重唤醒 runtime；succeeded/failed/in_progress 不自动重复；非 allowlist 账号不创建；确定性自动 request id 冲突可回读。
 - [ ] 运行新增测试，预期失败原因是配置字段或维度调度行为不存在。
 - [ ] 在 `backend/app/config.py` 增加 `daily_dimension_account_keys: str = ""`。
-- [ ] 在 `backend/app/collectors/scheduler.py` 解析去空格 allowlist。在现有最近三业务日循环内保持核心任务逻辑；只有核心成功时再检查 allowlist 和 `has_daily_dimension_attempt`，调用 `_get_or_create_daily_dimension_sync_task`，external id 使用 `auto-daily-dimension-{account_key}-{date}-{nonce}`。
+- [ ] 在 `backend/app/collectors/scheduler.py` 解析去空格 allowlist。在现有最近三业务日循环内保持核心任务逻辑；维度只为最新成熟业务日新建。已有 pending 维度任务需使后续轮次重启 runtime；terminal/in-progress 不重建。external id 固定使用 `auto-daily-dimension-{account_key}-{date}` 并在唯一冲突后严格回读。
 - [ ] 确认一次 scheduler pass 每实例最多启动一次 runtime，且新增任务计入 processed。
 - [ ] 重跑 `backend/tests/test_fetch_scheduler.py -q`，预期全通过。
 
 ## 任务 4：回归、文档与发布资产
 
+- [ ] 增加完整契约测试，覆盖 `report_fetch_daily_dimension` 被实例认领、上传 `admanager_daily_dimension_v1`、任务成功、账户/Site 维度事实落库且核心日报事实不被写入。
 - [ ] 运行 collector 全量：`python -m pytest collector/tests -q`。
 - [ ] 运行 backend 全量：`python -m pytest backend/tests -q`。
 - [ ] 运行 `python -m compileall -q backend/app collector/app`、`git diff --check`，检查无敏感值：`git diff | rg -i "client_secret|refresh_token|proxy_password|operator_api_token"` 只能出现既有字段名/测试占位符，不能出现生产值。
@@ -84,7 +85,7 @@ class ManualDailyDimensionFetchResponse(BaseModel):
 
 ## 任务 5：独立审阅、整改与提交
 
-- [ ] 以 `BASE_SHA=cc0e693` 和当前未提交 diff 请求独立审阅，覆盖任务隔离、scheduler 防重、人工重试、成熟门禁、OAuth、测试、无迁移、备份与回滚。
+- [ ] 以 `BASE_SHA=23990c5` 和当前未提交 diff 请求独立审阅，覆盖任务隔离、scheduler 防重、人工重试、成熟门禁、OAuth、测试、无迁移、备份与回滚。
 - [ ] 修复全部 P0/P1；每项修复必须先增加或调整失败测试，再最小实现，之后请求复审。P2 要么修复，要么在问题记录中说明不采纳理由和遗留风险。
 - [ ] 复审结论必须为 P0=0、P1=0。
 - [ ] 重新运行 collector/backend 全量测试、compileall、diff check 和敏感信息扫描。
@@ -101,9 +102,9 @@ class ManualDailyDimensionFetchResponse(BaseModel):
 - [ ] 只读预检：确认目标运行文件 hash 仍匹配已知生产基线；`ahzhhj.com` 唯一账号/实例、真实 `report_account_key`、OAuth、代理、policy、最新成熟核心日报、无 active 任务；确认磁盘空间和真实 systemd unit。
 - [ ] 停止 scheduler，等待 scheduler 进程和本项目临时 collector 子进程退出；Web 只在替换后端文件的最短窗口重启。
 - [ ] 创建 `/srv/adx-account-isolated-collector/backups/<UTC>-pre-daily-dimension-isolation`，权限 0700；使用 Python sqlite3 backup API 备份真实 `backend/control_plane.db`，源库/备份库 `quick_check=ok`；复制目标文件、`.env`、unit 文本，保存 hash、服务/进程状态和脱敏 ahzhhj 写前快照，敏感副本 0600。
-- [ ] 从已集成 master 的本地文件构建 staging；上传后逐文件 hash 与本地一致，再原子替换目标运行文件。原子更新 `.env`，仅设置 `ADX_COLLECTOR_DAILY_DIMENSION_ACCOUNT_KEYS=<现场实际 ahzhhj account key>`，不输出其他环境值。
-- [ ] 运行 production venv `compileall`、`alembic current`/`upgrade head`（预期无新迁移）、启动 Web，验证 `/health`、journal、数据库 quick check，再启动 scheduler。
-- [ ] 通过新人工端点只为 `ahzhhj.com` 最新成熟 Publisher 业务日创建一次维度任务；条件轮询至终态，不固定 sleep。
+- [ ] 从已集成 master 的本地文件构建 staging；上传后逐文件 hash 与本地一致，再原子替换目标运行文件。初始原子更新 `.env` 使 `ADX_COLLECTOR_DAILY_DIMENSION_ACCOUNT_KEYS` 为空，不输出其他环境值。
+- [ ] 运行 production venv `compileall`、`alembic current`/`upgrade head`（预期无新迁移）、启动 Web但保持 scheduler 停止，验证 `/health`、journal 和数据库 quick check。
+- [ ] 通过新人工端点只为 `ahzhhj.com` 最新成熟 Publisher 业务日创建一次维度任务；条件轮询至终态，不固定 sleep。全部验收通过后才原子设置 allowlist 为现场实际 key并启动 scheduler。
 - [ ] 验证维度任务 succeeded、`admanager_daily_dimension_v1` batch 存在、账户/Site 维度事实大于 0、维度 API 返回；核心日报写前/写后全指标和更新时间未改变；其他账号新增维度任务数为 0；无任务风暴、服务 active、health 和 quick check 正常。
 - [ ] 任一关键验证失败立即清空 allowlist、停止 scheduler并按规格恢复精确文件和 `.env`；恢复后验证 hash、compileall、health、服务和 quick check。不得整库恢复。
 - [ ] 将真实结果、保护点、hash、任务/batch/事实证据、回滚状态和发布范围追加到两份治理文档，提交并推送文档闭环；除非用户另行授权，不扩大其他节点。

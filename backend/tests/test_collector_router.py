@@ -4,6 +4,7 @@ from collections.abc import Callable, Generator
 from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -1896,6 +1897,221 @@ def test_manual_fetch_reuses_existing_hourly_sync_task(
     assert response.json()["hourly_sync_task_status"] == "pending"
     assert response.json()["hourly_sync_task_created"] is False
     assert launched_instances == [instance_id]
+
+
+def _create_manual_daily_dimension_subject(
+    client: TestClient,
+    *,
+    suffix: str,
+    report_date: str = "2026-09-01",
+    core_status: str | None = "succeeded",
+) -> tuple[int, int]:
+    account = client.post(
+        "/api/v1/operator/accounts",
+        json={
+            "name": f"daily-dimension-{suffix}",
+            "external_account_id": f"net-daily-dimension-{suffix}",
+            "status": "active",
+            "timezone": "Asia/Hong_Kong",
+        },
+    )
+    account_id = account.json()["id"]
+    instance = client.post(
+        "/api/v1/operator/instances",
+        json={
+            "account_id": account_id,
+            "name": f"collector-daily-dimension-{suffix}",
+            "instance_token": f"token-daily-dimension-{suffix}",
+            "status": "ready",
+        },
+    )
+    instance_id = instance.json()["id"]
+    if core_status is not None:
+        core_task = client.post(
+            "/api/v1/operator/tasks",
+            json={
+                "account_id": account_id,
+                "collector_instance_id": instance_id,
+                "task_type": "report_fetch",
+                "report_date": report_date,
+                "status": core_status,
+                "external_request_id": f"core-{suffix}-{report_date}",
+            },
+        )
+        assert core_task.status_code == 201
+    return account_id, instance_id
+
+
+def test_manual_daily_dimension_fetch_creates_isolated_task(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.collectors import service
+
+    account_id, instance_id = _create_manual_daily_dimension_subject(client, suffix="create")
+    launched_instances: list[int] = []
+    monkeypatch.setattr(service, "_launch_hourly_sync_runtime", lambda instance: launched_instances.append(instance.id))
+
+    response = client.post(
+        "/api/v1/operator/fetch-schedules/manual-daily-dimension-fetch",
+        json={
+            "account_id": account_id,
+            "collector_instance_id": instance_id,
+            "report_date": "2026-09-01",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["dimension_sync_task_created"] is True
+    assert response.json()["dimension_sync_task_status"] == "pending"
+    assert response.json()["request_id"] == f"daily-dimension-{account_id}-2026-09-01-attempt-1"
+    tasks = client.get("/api/v1/operator/tasks", params={"account_id": account_id}).json()["items"]
+    assert [task["task_type"] for task in tasks] == ["report_fetch", "report_fetch_daily_dimension"]
+    assert launched_instances == [instance_id]
+
+
+def test_manual_daily_dimension_fetch_reuses_active_task(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.collectors import service
+
+    account_id, instance_id = _create_manual_daily_dimension_subject(client, suffix="active")
+    existing = client.post(
+        "/api/v1/operator/tasks",
+        json={
+            "account_id": account_id,
+            "collector_instance_id": instance_id,
+            "task_type": "report_fetch_daily_dimension",
+            "report_date": "2026-09-01",
+            "status": "pending",
+            "external_request_id": "existing-daily-dimension-active",
+        },
+    )
+    assert existing.status_code == 201
+    monkeypatch.setattr(service, "_launch_hourly_sync_runtime", lambda instance: None)
+
+    response = client.post(
+        "/api/v1/operator/fetch-schedules/manual-daily-dimension-fetch",
+        json={"account_id": account_id, "collector_instance_id": instance_id, "report_date": "2026-09-01"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["dimension_sync_task_id"] == existing.json()["id"]
+    assert response.json()["dimension_sync_task_created"] is False
+
+
+def test_manual_daily_dimension_fetch_allows_retry_after_failed_task(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.collectors import service
+
+    account_id, instance_id = _create_manual_daily_dimension_subject(client, suffix="retry")
+    failed = client.post(
+        "/api/v1/operator/tasks",
+        json={
+            "account_id": account_id,
+            "collector_instance_id": instance_id,
+            "task_type": "report_fetch_daily_dimension",
+            "report_date": "2026-09-01",
+            "status": "failed",
+            "external_request_id": "existing-daily-dimension-failed",
+        },
+    )
+    assert failed.status_code == 201
+    monkeypatch.setattr(service, "_launch_hourly_sync_runtime", lambda instance: None)
+
+    response = client.post(
+        "/api/v1/operator/fetch-schedules/manual-daily-dimension-fetch",
+        json={"account_id": account_id, "collector_instance_id": instance_id, "report_date": "2026-09-01"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["dimension_sync_task_created"] is True
+    assert response.json()["dimension_sync_task_id"] != failed.json()["id"]
+    assert response.json()["request_id"] == f"daily-dimension-{account_id}-2026-09-01-attempt-2"
+
+
+def test_manual_daily_dimension_fetch_rejects_active_task_bound_to_other_instance(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.collectors import service
+
+    account_id, instance_id = _create_manual_daily_dimension_subject(client, suffix="wrong-instance")
+    monkeypatch.setattr(
+        service,
+        "_find_active_daily_dimension_sync_task",
+        lambda *args, **kwargs: SimpleNamespace(
+            id=999,
+            collector_instance_id=instance_id + 1,
+            status="pending",
+            external_request_id="wrong-instance-active-dimension",
+        ),
+    )
+    monkeypatch.setattr(service, "_launch_hourly_sync_runtime", lambda instance: None)
+
+    response = client.post(
+        "/api/v1/operator/fetch-schedules/manual-daily-dimension-fetch",
+        json={"account_id": account_id, "collector_instance_id": instance_id, "report_date": "2026-09-01"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Active daily dimension task belongs to another collector instance"
+
+
+def test_manual_daily_dimension_fetch_rejects_non_direct_collector_mode(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.collectors import service
+    from app.config import get_settings
+
+    account_id, instance_id = _create_manual_daily_dimension_subject(client, suffix="non-direct")
+    monkeypatch.setattr(get_settings(), "direct_collector_only", False)
+    monkeypatch.setattr(service, "_launch_hourly_sync_runtime", lambda instance: None)
+
+    response = client.post(
+        "/api/v1/operator/fetch-schedules/manual-daily-dimension-fetch",
+        json={"account_id": account_id, "collector_instance_id": instance_id, "report_date": "2026-09-01"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Manual daily dimension fetch requires direct collector mode"
+
+
+@pytest.mark.parametrize(
+    ("report_date", "core_status", "expected_detail"),
+    [
+        ("2999-01-01", None, "Authoritative daily dimension report date is not mature"),
+        ("2026-09-01", None, "Authoritative core daily report has not succeeded"),
+    ],
+)
+def test_manual_daily_dimension_fetch_enforces_readiness_and_core_prerequisite(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    report_date: str,
+    core_status: str | None,
+    expected_detail: str,
+) -> None:
+    from app.collectors import service
+
+    account_id, instance_id = _create_manual_daily_dimension_subject(
+        client,
+        suffix=f"guard-{report_date}",
+        report_date=report_date,
+        core_status=core_status,
+    )
+    monkeypatch.setattr(service, "_launch_hourly_sync_runtime", lambda instance: None)
+
+    response = client.post(
+        "/api/v1/operator/fetch-schedules/manual-daily-dimension-fetch",
+        json={"account_id": account_id, "collector_instance_id": instance_id, "report_date": report_date},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == expected_detail
 
 
 def test_manual_fetch_rejects_instance_without_report_config(

@@ -206,6 +206,22 @@ def trigger_manual_fetch(
     )
 
 
+@router.post(
+    "/operator/fetch-schedules/manual-daily-dimension-fetch",
+    response_model=schemas.ManualDailyDimensionFetchResponse,
+)
+def trigger_manual_daily_dimension_fetch(
+    payload: schemas.ManualFetchRequest,
+    db: Session = Depends(get_db),
+) -> schemas.ManualDailyDimensionFetchResponse:
+    settings = get_settings()
+    return service.trigger_manual_daily_dimension_fetch(
+        db,
+        payload,
+        direct_collector_only=settings.direct_collector_only,
+    )
+
+
 @router.post("/operator/hourly-backfill/targeted-recent", response_model=schemas.TargetedHourlyBackfillResponse)
 def trigger_targeted_recent_hourly_backfill(
     payload: schemas.TargetedHourlyBackfillRequest,

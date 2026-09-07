@@ -153,11 +153,17 @@ class AdManagerSoapReportFetcher:
             if batch is None:
                 return ()
             return (batch,)
-        core_rows = self._service.fetch_site_daily_report(report_date=task.report_date, task_id=task.id)
-        core_batch = self._service.build_fetch_batch(rows=core_rows)
-        dimension_rows = self._service.fetch_site_daily_dimension_report(report_date=task.report_date, task_id=task.id)
-        dimension_batch = self._service.build_daily_dimension_fetch_batch(rows=dimension_rows)
-        return tuple(batch for batch in (core_batch, dimension_batch) if batch is not None)
+        if task.task_type == "report_fetch":
+            rows = self._service.fetch_site_daily_report(report_date=task.report_date, task_id=task.id)
+            batch = self._service.build_fetch_batch(rows=rows)
+        elif task.task_type == "report_fetch_daily_dimension":
+            rows = self._service.fetch_site_daily_dimension_report(report_date=task.report_date, task_id=task.id)
+            batch = self._service.build_daily_dimension_fetch_batch(rows=rows)
+        else:
+            raise ValueError(f"Unsupported report task type: {task.task_type}")
+        if batch is None:
+            return ()
+        return (batch,)
 
 
 def build_fetcher(settings: RuntimeSettings) -> Fetcher:

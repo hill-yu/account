@@ -70,6 +70,7 @@ def policy_db() -> tuple[Session, int]:
     [
         "operator_task",
         "manual_hourly",
+        "manual_daily_dimension",
         "targeted_recent",
         "automatic_hourly",
         "automatic_daily",
@@ -109,6 +110,19 @@ def test_healthy_account_with_matching_active_version_is_allowed(policy_db: tupl
 
     assert policy.gray_enabled is True
     assert policy.hourly_fetch_enabled is True
+
+
+def test_manual_daily_dimension_requires_manual_fetch_enabled(policy_db: tuple[Session, int]) -> None:
+    db, account_id = policy_db
+    policy = db.query(CollectorAccountPolicy).filter_by(account_id=account_id).one()
+    policy.manual_fetch_enabled = False
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        assert_fetch_allowed(db, account_id=account_id, fetch_kind="manual_daily_dimension")
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "FETCH_POLICY_MANUAL_DISABLED"
 
 
 def test_runtime_fetch_requires_an_explicit_credential_version(policy_db: tuple[Session, int]) -> None:

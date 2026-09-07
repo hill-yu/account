@@ -9,7 +9,7 @@ from app.models.oauth_app_config import OAuthAppConfig
 from app.models.oauth_credential import OAuthCredential
 
 
-MANUAL_FETCH_KINDS = {"operator_task", "manual_hourly", "targeted_recent"}
+MANUAL_FETCH_KINDS = {"operator_task", "manual_hourly", "manual_daily_dimension", "targeted_recent"}
 RUNTIME_FETCH_KINDS = {"claim", "batch", "terminal_status"}
 
 

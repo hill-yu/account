@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     allow_stub_runtime_with_managed_credentials: bool = False
     direct_collector_only: bool = True
     cross_day_finalize_account_keys: str = ""
+    daily_dimension_account_keys: str = ""
 
     model_config = SettingsConfigDict(
         env_prefix="ADX_COLLECTOR_",

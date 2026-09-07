@@ -15,6 +15,7 @@ from app import models as _models  # noqa: F401
 from app.database import Base, get_db
 from app.main import create_app
 from app.models.account_daily_report import AccountDailyReport
+from app.models.account_daily_dimension_report import AccountDailyDimensionReport
 from app.models.account_hourly_report import AccountHourlyReport
 from app.models.site_daily_report import SiteDailyReport
 from app.models.site_hourly_report import SiteHourlyReport
@@ -51,7 +52,7 @@ def client(tmp_path: Path) -> Generator[tuple[TestClient, sessionmaker[Session]]
     engine.dispose()
 
 
-def _seed_task(client: TestClient) -> tuple[int, str]:
+def _seed_task(client: TestClient, *, task_type: str = "report_fetch") -> tuple[int, str]:
     create_account = client.post(
         "/api/v1/operator/accounts",
         json={"name": "account-ingestion", "external_account_id": "ext-ingestion", "status": "active"},
@@ -74,12 +75,77 @@ def _seed_task(client: TestClient) -> tuple[int, str]:
         json={
             "account_id": account_id,
             "collector_instance_id": instance_id,
-            "task_type": "report_fetch",
+            "task_type": task_type,
             "report_date": "2026-05-21",
             "status": "pending",
         },
     )
     return create_task.json()["id"], "token-ingestion"
+
+
+def test_isolated_daily_dimension_task_claims_ingests_and_completes(
+    client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    test_client, session_factory = client
+    task_id, token = _seed_task(test_client, task_type="report_fetch_daily_dimension")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    claimed = test_client.get("/api/v1/collector/tasks/next", headers=headers)
+    assert claimed.status_code == 200
+    assert claimed.json()["id"] == task_id
+    assert claimed.json()["task_type"] == "report_fetch_daily_dimension"
+    assert claimed.json()["status"] == "in_progress"
+
+    batch = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/batches",
+        headers=headers,
+        json={
+            "batch_key": "daily-dimension-page-1",
+            "row_count": 1,
+            "payload_hash": "isolated-daily-dimension-hash",
+            "schema_version": "admanager_daily_dimension_v1",
+            "rows": [
+                {
+                    "report_date": "2026-05-21",
+                    "url_id": "url-isolated",
+                    "url": "https://example.com/isolated",
+                    "ad_country_code": "HK",
+                    "ad_country_name": "Hong Kong",
+                    "ad_slot_id": "slot-isolated",
+                    "ad_slot_name": "Isolated slot",
+                    "responses_served": 10,
+                    "requests": 12,
+                    "impressions": 8,
+                    "clicks": 1,
+                    "revenue": "0.100000",
+                    "ecpm": "12.500000",
+                }
+            ],
+        },
+    )
+    assert batch.status_code == 201
+
+    completed = test_client.post(
+        f"/api/v1/collector/tasks/{task_id}/status",
+        headers=headers,
+        json={"status": "succeeded", "message": "daily dimension batch uploaded"},
+    )
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "succeeded"
+
+    with session_factory() as session:
+        site_rows = session.scalars(select(SiteDailyDimensionReport)).all()
+        account_rows = session.scalars(select(AccountDailyDimensionReport)).all()
+        core_site_rows = session.scalars(select(SiteDailyReport)).all()
+        core_account_rows = session.scalars(select(AccountDailyReport)).all()
+
+    assert len(site_rows) == 1
+    assert site_rows[0].url_id == "url-isolated"
+    assert site_rows[0].source_kind == "authoritative_daily"
+    assert len(account_rows) == 1
+    assert account_rows[0].ad_country_code == "HK"
+    assert core_site_rows == []
+    assert core_account_rows == []
 
 
 def test_batch_ingestion_is_idempotent_by_task_and_batch_key(

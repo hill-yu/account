@@ -240,6 +240,11 @@ class FetchScheduler:
 
     def _enqueue_due_authoritative_daily_fetches(self, db: Session, now: datetime) -> int:
         processed = 0
+        daily_dimension_account_keys = {
+            item.strip()
+            for item in get_settings().daily_dimension_account_keys.split(",")
+            if item.strip()
+        }
 
         for instance in service.list_gray_daily_fetch_instances(db):
             if service.should_skip_automatic_data_fetch(db, instance, fetch_kind="automatic_daily"):
@@ -253,20 +258,63 @@ class FetchScheduler:
             local_now = now.astimezone(ZoneInfo(timezone_name))
             anchor_date = local_now.date()
             has_pending_task = False
+            mature_report_dates = [
+                anchor_date - timedelta(days=offset)
+                for offset in range(3, 0, -1)
+                if service.is_authoritative_daily_ready(
+                    report_date=anchor_date - timedelta(days=offset),
+                    timezone_name=timezone_name,
+                    now=now,
+                )
+            ]
+            latest_mature_report_date = max(mature_report_dates, default=None)
 
             for offset in range(3, 0, -1):
                 report_date = anchor_date - timedelta(days=offset)
-                if not service.is_authoritative_daily_ready(
-                    report_date=report_date,
-                    timezone_name=timezone_name,
-                    now=now,
-                ):
+                if report_date not in mature_report_dates:
                     continue
-                if service.has_successful_authoritative_daily_fetch(
+                core_succeeded = service.has_successful_authoritative_daily_fetch(
                     db,
                     account_id=account.id,
                     report_date=report_date,
-                ):
+                )
+                if core_succeeded:
+                    if instance.report_account_key not in daily_dimension_account_keys:
+                        continue
+                    active_dimension_task = service._find_active_daily_dimension_sync_task(
+                        db,
+                        account_id=account.id,
+                        report_date=report_date,
+                    )
+                    if active_dimension_task is not None:
+                        if (
+                            active_dimension_task.status == "pending"
+                            and active_dimension_task.collector_instance_id == instance.id
+                        ):
+                            has_pending_task = True
+                        continue
+                    if report_date != latest_mature_report_date:
+                        continue
+                    if service.has_daily_dimension_attempt(
+                        db,
+                        account_id=account.id,
+                        report_date=report_date,
+                    ):
+                        continue
+
+                    task, created = service._get_or_create_daily_dimension_sync_task(
+                        db,
+                        account_id=account.id,
+                        collector_instance_id=instance.id,
+                        report_date=report_date,
+                        external_request_id=(
+                            f"auto-daily-dimension-{instance.report_account_key}-{report_date.isoformat()}"
+                        ),
+                    )
+                    if task.status == "pending":
+                        has_pending_task = True
+                    if created:
+                        processed += 1
                     continue
 
                 task, created = service._get_or_create_daily_sync_task(

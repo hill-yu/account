@@ -1090,6 +1090,68 @@ def trigger_manual_fetch(
     )
 
 
+def trigger_manual_daily_dimension_fetch(
+    db: Session,
+    payload: schemas.ManualFetchRequest,
+    *,
+    direct_collector_only: bool = True,
+) -> schemas.ManualDailyDimensionFetchResponse:
+    account = db.get(Account, payload.account_id)
+    if account is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+    assert_fetch_allowed(db, account_id=payload.account_id, fetch_kind="manual_daily_dimension")
+
+    instance = db.get(CollectorInstance, payload.collector_instance_id)
+    if instance is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collector instance not found")
+    if instance.account_id != payload.account_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Collector instance account does not match manual dimension fetch account",
+        )
+    if not direct_collector_only:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Manual daily dimension fetch requires direct collector mode",
+        )
+
+    timezone_name = account.timezone or DEFAULT_REPORT_TIMEZONE
+    if not is_authoritative_daily_ready(
+        report_date=payload.report_date,
+        timezone_name=timezone_name,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Authoritative daily dimension report date is not mature",
+        )
+    if not has_successful_authoritative_daily_fetch(
+        db,
+        account_id=payload.account_id,
+        report_date=payload.report_date,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Authoritative core daily report has not succeeded",
+        )
+
+    task, created = _get_or_create_daily_dimension_sync_task(
+        db,
+        account_id=payload.account_id,
+        collector_instance_id=payload.collector_instance_id,
+        report_date=payload.report_date,
+        external_request_id=None,
+    )
+    _launch_hourly_sync_runtime(instance)
+    return schemas.ManualDailyDimensionFetchResponse(
+        ok=True,
+        status=task.status,
+        request_id=task.external_request_id,
+        dimension_sync_task_id=task.id,
+        dimension_sync_task_status=task.status,
+        dimension_sync_task_created=created,
+    )
+
+
 def create_task(db: Session, payload: schemas.SyncTaskCreate) -> CollectorSyncTask:
     """直接创建一个同步任务（API 入口）。
 
@@ -1263,6 +1325,40 @@ def _find_active_daily_sync_task(
     )
 
 
+def _find_active_daily_dimension_sync_task(
+    db: Session,
+    *,
+    account_id: int,
+    report_date: date,
+) -> CollectorSyncTask | None:
+    return db.scalar(
+        select(CollectorSyncTask).where(
+            CollectorSyncTask.account_id == account_id,
+            CollectorSyncTask.task_type == "report_fetch_daily_dimension",
+            CollectorSyncTask.report_date == report_date,
+            CollectorSyncTask.status.in_(ACTIVE_SYNC_TASK_STATUSES),
+        )
+    )
+
+
+def has_daily_dimension_attempt(
+    db: Session,
+    *,
+    account_id: int,
+    report_date: date,
+) -> bool:
+    return (
+        db.scalar(
+            select(CollectorSyncTask.id).where(
+                CollectorSyncTask.account_id == account_id,
+                CollectorSyncTask.task_type == "report_fetch_daily_dimension",
+                CollectorSyncTask.report_date == report_date,
+            )
+        )
+        is not None
+    )
+
+
 def _raise_if_hourly_sync_task_active(
     db: Session,
     *,
@@ -1339,6 +1435,68 @@ def _get_or_create_daily_sync_task(
     )
 
 
+def _get_or_create_daily_dimension_sync_task(
+    db: Session,
+    *,
+    account_id: int,
+    collector_instance_id: int,
+    report_date: date,
+    external_request_id: str | None,
+) -> tuple[CollectorSyncTask, bool]:
+    existing = _find_active_daily_dimension_sync_task(
+        db,
+        account_id=account_id,
+        report_date=report_date,
+    )
+    if existing is not None:
+        if existing.collector_instance_id != collector_instance_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Active daily dimension task belongs to another collector instance",
+            )
+        return existing, False
+    resolved_request_id = external_request_id
+    if resolved_request_id is None:
+        attempt_count = db.scalar(
+            select(func.count(CollectorSyncTask.id)).where(
+                CollectorSyncTask.account_id == account_id,
+                CollectorSyncTask.task_type == "report_fetch_daily_dimension",
+                CollectorSyncTask.report_date == report_date,
+            )
+        )
+        resolved_request_id = (
+            f"daily-dimension-{account_id}-{report_date.isoformat()}-attempt-{int(attempt_count or 0) + 1}"
+        )
+    try:
+        task = _create_daily_dimension_sync_task(
+            db,
+            account_id=account_id,
+            collector_instance_id=collector_instance_id,
+            report_date=report_date,
+            external_request_id=resolved_request_id,
+        )
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_409_CONFLICT:
+            raise
+        task = db.scalar(
+            select(CollectorSyncTask).where(CollectorSyncTask.external_request_id == resolved_request_id)
+        )
+        if task is None:
+            raise
+        if (
+            task.account_id != account_id
+            or task.report_date != report_date
+            or task.task_type != "report_fetch_daily_dimension"
+            or task.collector_instance_id != collector_instance_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Daily dimension request id belongs to another task",
+            ) from exc
+        return task, False
+    return task, True
+
+
 def _create_hourly_sync_task(
     db: Session,
     *,
@@ -1392,6 +1550,30 @@ def _create_daily_sync_task(
     )
     db.add(task)
     commit_or_raise_conflict(db, "Daily sync task already active for this account and report date")
+    db.refresh(task)
+    return task
+
+
+def _create_daily_dimension_sync_task(
+    db: Session,
+    *,
+    account_id: int,
+    collector_instance_id: int,
+    report_date: date,
+    external_request_id: str | None,
+) -> CollectorSyncTask:
+    task = CollectorSyncTask(
+        account_id=account_id,
+        collector_instance_id=collector_instance_id,
+        task_type="report_fetch_daily_dimension",
+        report_date=report_date,
+        status="pending",
+        credential_version=_active_credential_version_for_task(db, account_id=account_id),
+        external_request_id=external_request_id
+        or f"daily-dimension-{account_id}-{report_date.isoformat()}-{token_urlsafe(8)}",
+    )
+    db.add(task)
+    commit_or_raise_conflict(db, "Daily dimension sync task already active for this account and report date")
     db.refresh(task)
     return task
 
@@ -3203,7 +3385,11 @@ def update_task_status(
     if oauth_app is not None and payload.status == "failed" and safe_failure_class == "oauth_refresh_revoked":
         if updated_task.task_type == "oauth_health_check":
             _open_oauth_circuit(db, oauth_app=oauth_app, account_id=instance.account_id)
-        elif updated_task.task_type in {"report_fetch", "report_fetch_hourly"}:
+        elif updated_task.task_type in {
+            "report_fetch",
+            "report_fetch_hourly",
+            "report_fetch_daily_dimension",
+        }:
             _request_oauth_revalidation(
                 db,
                 oauth_app=oauth_app,

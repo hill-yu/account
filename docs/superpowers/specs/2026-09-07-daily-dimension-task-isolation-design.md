@@ -41,7 +41,9 @@
 - 同账号同业务日的核心 `report_fetch` 已成功；
 - 同账号同业务日不存在任何 `report_fetch_daily_dimension` 自动尝试。
 
-自动任务每个账号、业务日最多创建一次。失败后不在每轮 scheduler 自动重建，避免任务风暴；人工入口可以在定位原因后受控重试。任务 external request id 使用独立 `auto-daily-dimension-...` 前缀。
+核心日报仍检查最近三个业务日；维度自动任务只允许为其中“最新且已成熟”的业务日新建，避免 allowlist 首次开启时把上线前多个日期当作历史回补。已有 pending 维度任务在 allowlist 保持开启时会让 scheduler 后续轮次重新唤醒对应 runtime，直至任务被认领；in-progress 或任意终态不会重复启动或重建。
+
+自动任务每个账号、业务日最多创建一次。失败后不在每轮 scheduler 自动重建，避免任务风暴；人工入口可以在定位原因后受控重试。自动 external request id 固定为 `auto-daily-dimension-{account_key}-{report_date}`，人工任务按同账号/日期的确定性 attempt 序号命名；唯一键冲突后只允许回读严格匹配的原任务，防止并发 scheduler 或人工请求产生重复任务。
 
 第一批生产配置只写入 `ahzhhj` 对应的实际 `report_account_key`，不得按账号展示名猜测 key。
 
@@ -49,7 +51,7 @@
 
 新增 `POST /api/v1/operator/fetch-schedules/manual-daily-dimension-fetch`，请求继续使用账号、采集实例和 Publisher 业务日三个字段，响应返回独立维度任务 id、状态和是否新建。
 
-入口必须验证：账号和实例严格匹配；`manual_fetch_enabled=true` 且 OAuth/实例配置通过现有门禁；目标业务日已成熟；同日核心日报任务已成功；已有 active 维度任务时复用并启动 runtime，已有终态失败任务时允许新建人工重试。
+入口当前只支持生产实际使用的 direct collector 模式；非 direct 模式明确返回 409，不伪装成远端拉取。入口必须验证：账号和实例严格匹配；`manual_fetch_enabled=true` 且 OAuth/实例配置通过现有门禁；目标业务日已成熟；同日核心日报任务已成功；已有 active 维度任务时仅当实例一致才复用并启动 runtime，异常的跨实例 active 任务返回 409；已有终态失败任务时允许新建人工重试。
 
 ## 故障与安全边界
 
@@ -60,7 +62,7 @@
 
 ## TDD 与验证标准
 
-采集端必须证明核心任务只调用核心日报、维度任务只调用维度日报、维度失败不会出现在核心路径、未知任务类型明确失败。控制面必须证明默认空 allowlist 不创建任务，allowlist 账号只在成熟且核心成功后创建一次，任何既有维度尝试均阻止自动重建，人工入口能正确拒绝边界、复用 active 并允许失败后的人工重试；新任务可被认领，维度 OAuth 失效进入现有熔断。既有小时、核心日报、scheduler、OAuth、ingestion 回归必须全部通过。
+采集端必须证明核心任务只调用核心日报、维度任务只调用维度日报、维度失败不会出现在核心路径、未知任务类型明确失败。控制面必须证明默认空 allowlist 不创建任务，allowlist 账号只为最新成熟日且核心成功后创建一次，pending 可重唤醒，任何终态维度尝试均阻止自动重建，确定性 request id 可在唯一键冲突后安全回读，人工入口能拒绝非 direct/跨实例等边界、复用同实例 active 并允许失败后的人工重试；完整契约测试必须覆盖新任务被认领、维度 batch 入库、任务成功和核心事实不被写入；维度 OAuth 失效进入现有熔断。既有小时、核心日报、scheduler、OAuth、ingestion 回归必须全部通过。
 
 ## Git、发布和备份
 
@@ -70,7 +72,7 @@
 - 本次涉及的全部运行文件、`.env`、相关 systemd unit 文本、服务状态、进程清单和 SHA-256 清单；
 - `ahzhhj.com` 最新成熟核心日报任务/batch/事实及维度表写前行数的脱敏快照。
 
-发布使用 staging、hash 校验和原子替换，只同步已集成 `master` 的精确文件。先把 allowlist 配为仅 `ahzhhj`，运行编译、Alembic、服务 health、数据库 quick check，再启动 scheduler 并人工触发一个已成熟业务日的维度任务。验收必须同时确认核心日报值未改变，维度任务、batch、账户/站点维度事实存在，API 可读取，其他账号没有维度任务，且无新增异常任务风暴。
+发布使用 staging、hash 校验和原子替换，只同步已集成 `master` 的精确文件。初始保持维度 allowlist 为空且 scheduler 停止；运行编译、Alembic、服务 health 和数据库 quick check 后，通过人工端点只触发 `ahzhhj` 一个已成熟业务日。人工验证全部通过后，才把 allowlist 原子设置为现场实际 key 并启动 scheduler。验收必须同时确认核心日报值未改变，维度任务、batch、账户/站点维度事实存在，API 可读取，其他账号没有维度任务，且无新增异常任务风暴。
 
 ## 回滚
 

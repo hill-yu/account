@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app import models as _models  # noqa: F401
 from app.collectors import schemas as collector_schemas
+from app.config import get_settings
 from app.database import Base
 from app.main import create_app
 from app.models.account import Account
@@ -933,6 +934,328 @@ def test_scheduler_creates_daily_fetch_tasks_for_recent_three_days(
     assert [task.task_type for task in tasks] == ["report_fetch", "report_fetch", "report_fetch"]
     assert [task.collector_instance_id for task in tasks] == [instance_id, instance_id, instance_id]
     assert [task.report_date for task in tasks] == [date(2026, 7, 9), date(2026, 7, 10), date(2026, 7, 11)]
+
+
+def test_scheduler_creates_daily_dimension_only_after_core_success_for_allowlisted_account(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name="daily-dimension-account",
+        instance_name="daily-dimension-instance",
+        report_account_key="ahzhhj",
+    )
+    with session_factory() as session:
+        session.add_all(
+            [
+                CollectorSyncTask(
+                    account_id=account_id,
+                    collector_instance_id=instance_id,
+                    task_type="report_fetch",
+                    report_date=report_date,
+                    status="succeeded",
+                    external_request_id=f"core-daily-dimension-{report_date.isoformat()}",
+                )
+                for report_date in (date(2026, 7, 9), date(2026, 7, 10), date(2026, 7, 11))
+            ]
+        )
+        session.commit()
+
+    monkeypatch.setattr(get_settings(), "daily_dimension_account_keys", " ahzhhj ", raising=False)
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+
+    FetchScheduler(
+        session_factory=session_factory,
+        timeout_seconds=15,
+        now_provider=lambda: datetime(2026, 7, 12, 12, 0, tzinfo=UTC),
+    ).run_pending_once()
+
+    with session_factory() as session:
+        dimension_tasks = list(
+            session.scalars(
+                select(CollectorSyncTask).where(
+                    CollectorSyncTask.account_id == account_id,
+                    CollectorSyncTask.task_type == "report_fetch_daily_dimension",
+                )
+            )
+        )
+
+    assert len(dimension_tasks) == 1
+    assert dimension_tasks[0].report_date == date(2026, 7, 11)
+    assert dimension_tasks[0].status == "pending"
+    assert dimension_tasks[0].external_request_id == "auto-daily-dimension-ahzhhj-2026-07-11"
+
+
+def test_scheduler_relaunches_runtime_for_existing_pending_daily_dimension(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name="daily-dimension-pending-relaunch",
+        instance_name="daily-dimension-pending-relaunch-instance",
+        report_account_key="ahzhhj",
+    )
+    with session_factory() as session:
+        session.add_all(
+            [
+                CollectorSyncTask(
+                    account_id=account_id,
+                    collector_instance_id=instance_id,
+                    task_type="report_fetch",
+                    report_date=report_date,
+                    status="succeeded",
+                    external_request_id=f"core-daily-dimension-pending-relaunch-{report_date.isoformat()}",
+                )
+                for report_date in (date(2026, 7, 9), date(2026, 7, 10), date(2026, 7, 11))
+            ]
+            + [
+                CollectorSyncTask(
+                    account_id=account_id,
+                    collector_instance_id=instance_id,
+                    task_type="report_fetch_daily_dimension",
+                    report_date=date(2026, 7, 11),
+                    status="pending",
+                    external_request_id="dimension-pending-relaunch",
+                ),
+            ]
+        )
+        session.commit()
+
+    monkeypatch.setattr(get_settings(), "daily_dimension_account_keys", "ahzhhj")
+    launched_instances: list[int] = []
+    monkeypatch.setattr(
+        "app.collectors.scheduler.service._launch_hourly_sync_runtime",
+        lambda instance: launched_instances.append(instance.id),
+    )
+    scheduler = FetchScheduler(
+        session_factory=session_factory,
+        timeout_seconds=15,
+        now_provider=lambda: datetime(2026, 7, 12, 12, 0, tzinfo=UTC),
+    )
+
+    scheduler.run_pending_once()
+    scheduler.run_pending_once()
+
+    assert launched_instances == [instance_id, instance_id]
+
+
+def test_daily_dimension_manual_retry_uses_deterministic_attempt_id_and_reuses_active(
+    session_factory,
+) -> None:
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name="daily-dimension-concurrent-manual",
+        instance_name="daily-dimension-concurrent-manual-instance",
+        report_account_key="ahzhhj",
+    )
+    with session_factory() as session:
+        session.add(
+            CollectorSyncTask(
+                account_id=account_id,
+                collector_instance_id=instance_id,
+                task_type="report_fetch_daily_dimension",
+                report_date=date(2026, 7, 11),
+                status="failed",
+                external_request_id=f"daily-dimension-{account_id}-2026-07-11-attempt-1",
+            )
+        )
+        session.commit()
+
+    with session_factory() as first_session:
+        first, first_created = collectors_service._get_or_create_daily_dimension_sync_task(
+            first_session,
+            account_id=account_id,
+            collector_instance_id=instance_id,
+            report_date=date(2026, 7, 11),
+            external_request_id=None,
+        )
+    with session_factory() as second_session:
+        second, second_created = collectors_service._get_or_create_daily_dimension_sync_task(
+            second_session,
+            account_id=account_id,
+            collector_instance_id=instance_id,
+            report_date=date(2026, 7, 11),
+            external_request_id=None,
+        )
+
+    assert first.external_request_id == f"daily-dimension-{account_id}-2026-07-11-attempt-2"
+    assert second.id == first.id
+    assert first_created is True
+    assert second_created is False
+
+
+def test_daily_dimension_creation_recovers_deterministic_external_id_conflict(
+    session_factory,
+) -> None:
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name="daily-dimension-conflict-recovery",
+        instance_name="daily-dimension-conflict-recovery-instance",
+        report_account_key="ahzhhj",
+    )
+    request_id = "auto-daily-dimension-ahzhhj-2026-07-11"
+    with session_factory() as session:
+        existing = CollectorSyncTask(
+            account_id=account_id,
+            collector_instance_id=instance_id,
+            task_type="report_fetch_daily_dimension",
+            report_date=date(2026, 7, 11),
+            status="failed",
+            external_request_id=request_id,
+        )
+        session.add(existing)
+        session.commit()
+        existing_id = existing.id
+
+    with session_factory() as session:
+        task, created = collectors_service._get_or_create_daily_dimension_sync_task(
+            session,
+            account_id=account_id,
+            collector_instance_id=instance_id,
+            report_date=date(2026, 7, 11),
+            external_request_id=request_id,
+        )
+
+    assert task.id == existing_id
+    assert created is False
+
+
+def test_scheduler_does_not_create_daily_dimension_without_core_success(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_id, _ = _create_account_with_instance(
+        session_factory,
+        account_name="daily-dimension-no-core",
+        instance_name="daily-dimension-no-core-instance",
+        report_account_key="ahzhhj",
+    )
+    monkeypatch.setattr(get_settings(), "daily_dimension_account_keys", "ahzhhj", raising=False)
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+
+    FetchScheduler(
+        session_factory=session_factory,
+        timeout_seconds=15,
+        now_provider=lambda: datetime(2026, 7, 12, 12, 0, tzinfo=UTC),
+    ).run_pending_once()
+
+    with session_factory() as session:
+        dimension_tasks = list(
+            session.scalars(
+                select(CollectorSyncTask).where(
+                    CollectorSyncTask.account_id == account_id,
+                    CollectorSyncTask.task_type == "report_fetch_daily_dimension",
+                )
+            )
+        )
+    assert dimension_tasks == []
+
+
+@pytest.mark.parametrize("enabled_keys", ["", "another-account"])
+def test_scheduler_does_not_create_daily_dimension_for_account_outside_allowlist(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    enabled_keys: str,
+) -> None:
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name=f"daily-dimension-disabled-{enabled_keys or 'empty'}",
+        instance_name=f"daily-dimension-disabled-{enabled_keys or 'empty'}-instance",
+        report_account_key="ahzhhj",
+    )
+    with session_factory() as session:
+        session.add(
+            CollectorSyncTask(
+                account_id=account_id,
+                collector_instance_id=instance_id,
+                task_type="report_fetch",
+                report_date=date(2026, 7, 11),
+                status="succeeded",
+                external_request_id=f"core-daily-dimension-disabled-{enabled_keys or 'empty'}",
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(get_settings(), "daily_dimension_account_keys", enabled_keys)
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+
+    FetchScheduler(
+        session_factory=session_factory,
+        timeout_seconds=15,
+        now_provider=lambda: datetime(2026, 7, 12, 12, 0, tzinfo=UTC),
+    ).run_pending_once()
+
+    with session_factory() as session:
+        dimension_tasks = list(
+            session.scalars(
+                select(CollectorSyncTask).where(
+                    CollectorSyncTask.account_id == account_id,
+                    CollectorSyncTask.task_type == "report_fetch_daily_dimension",
+                )
+            )
+        )
+    assert dimension_tasks == []
+
+
+@pytest.mark.parametrize("existing_status", ["pending", "in_progress", "succeeded", "failed"])
+def test_scheduler_never_repeats_automatic_daily_dimension_attempt(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    existing_status: str,
+) -> None:
+    account_id, instance_id = _create_account_with_instance(
+        session_factory,
+        account_name=f"daily-dimension-{existing_status}",
+        instance_name=f"daily-dimension-{existing_status}-instance",
+        report_account_key="ahzhhj",
+    )
+    with session_factory() as session:
+        session.add_all(
+            [
+                CollectorSyncTask(
+                    account_id=account_id,
+                    collector_instance_id=instance_id,
+                    task_type="report_fetch",
+                    report_date=date(2026, 7, 11),
+                    status="succeeded",
+                    external_request_id=f"core-{existing_status}",
+                ),
+                CollectorSyncTask(
+                    account_id=account_id,
+                    collector_instance_id=instance_id,
+                    task_type="report_fetch_daily_dimension",
+                    report_date=date(2026, 7, 11),
+                    status=existing_status,
+                    external_request_id=f"dimension-{existing_status}",
+                ),
+            ]
+        )
+        session.commit()
+
+    monkeypatch.setattr(get_settings(), "daily_dimension_account_keys", "ahzhhj", raising=False)
+    monkeypatch.setattr("app.collectors.scheduler.service._launch_hourly_sync_runtime", lambda instance: None)
+
+    FetchScheduler(
+        session_factory=session_factory,
+        timeout_seconds=15,
+        now_provider=lambda: datetime(2026, 7, 12, 12, 0, tzinfo=UTC),
+    ).run_pending_once()
+
+    with session_factory() as session:
+        count = len(
+            list(
+                session.scalars(
+                    select(CollectorSyncTask).where(
+                        CollectorSyncTask.account_id == account_id,
+                        CollectorSyncTask.task_type == "report_fetch_daily_dimension",
+                        CollectorSyncTask.report_date == date(2026, 7, 11),
+                    )
+                )
+            )
+        )
+    assert count == 1
 
 
 def test_scheduler_does_not_treat_derived_daily_rows_as_authoritative_fetches(

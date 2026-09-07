@@ -1256,3 +1256,27 @@ npm run build
 - 用户决定：保持现有业务日结束后五小时成熟门禁，不改为三小时；继续按已确认规格完成开发和部署。
 - 实施计划：新增 `docs/superpowers/plans/2026-09-07-daily-dimension-task-isolation-implementation.md`，分七项锁定采集分派、人工入口、默认关闭 allowlist 自动调度、全量回归、独立审阅、受控 master 集成以及生产保护点/单节点灰度/回滚。计划明确无数据库迁移、代码审阅前不提交实现、首批只允许 `ahzhhj.com` 及其现有绑定代理。
 - 验证、写入与发布：本阶段仅本地文档，已逐项对照规格覆盖目标、非目标、故障隔离、自动防重、人工重试、OAuth、备份和回滚；尚未修改产品代码、运行测试或触发生产。文档可用反向提交回滚，生产无回滚项。
+
+#### 2026-09-07 22:12—23:30（北京时间）— 权威维度日报独立任务 TDD 实现
+
+- 目标与授权范围：按已确认规格实现独立权威维度日报任务；成熟门禁保持 Publisher 业务日结束后 5 小时。当前仅本地代码、测试和治理文档写入，未连接 Google、未使用生产账号/代理、未修改生产服务器。
+- 变更内容与原因：采集端将 `report_fetch` 固定为只生成核心日报 batch，并让新任务 `report_fetch_daily_dimension` 只生成维度日报 batch，未知报表任务明确失败，避免维度异常阻断核心日报。控制面新增默认空的 `daily_dimension_account_keys`、人工维度任务端点、任务创建/活跃复用/终态人工重试、核心日报成功前置、成熟门禁、自动任务任何既有尝试即停止重建，以及维度任务 OAuth refresh revoked 复验/熔断衔接。scheduler 继续复用现有最近三业务日循环，但仅对 allowlist 实际 key 创建，默认不产生新行为。
+- 影响范围与预期后果：涉及 collector 报表任务分派和 backend 配置、policy、schema、router、service、scheduler；无数据库迁移，不修改小时、核心日报成熟时间、既有查询 API 或其他账号默认行为。人工维度任务允许失败后受控重试；自动任务每账号/业务日最多一次，避免任务风暴。
+- TDD 证据：collector 首轮取得 3 failed/2 passed 的有效行为红灯，最小实现后 `test_fetcher.py` 5 passed、`test_runtime.py` 16 passed；人工端点首轮 5 failed、policy 1 failed，最小实现后端点 5 passed、policy 2 passed；scheduler 在补齐测试导入后确认 6 个配置/行为红灯，最小实现后新增场景 8 passed、scheduler 全量 48 passed；维度任务 OAuth revoked 在临时移除实现后准确得到 1 failed/1 passed，恢复最小分派后 2 passed。最终 collector 全量 91 passed（1 条既有依赖弃用告警），backend 全量 204 passed（15 条既有弃用告警）。`git diff --check` 通过。
+- 失败操作与止损：①工作区 bundled Python 没有 pytest，首次基线测试报 `No module named pytest`；未执行产品代码，改用项目既有 backend/collector 隔离 venv。②人工端点绿色阶段一条测试错误假设任务列表为倒序，实际 API 保持既有升序；仅修正测试期望后通过，未改变产品排序。③scheduler 首次定向命令在已经位于 backend 的 cwd 下又加 `backend/tests/...`，只得到文件不存在，改为正确相对路径。④scheduler 测试首次漏导入 `get_settings`，产生 `NameError`，不计有效红灯；补导入后才取得可归因于缺少配置字段的有效红灯。⑤配置字段不存在时使用 `raising=False` 仍被 Pydantic 禁止动态字段，并在 monkeypatch teardown 报错；按规格增加正式 Settings 字段后闭环。以上均只发生在本地测试/检索阶段，无生产、数据库或外部系统影响。防再犯：先确认测试解释器与 cwd；测试红灯必须排除导入、语法、fixture 和错误排序假设；Pydantic Settings 新字段必须先落模型定义，不能依赖动态 monkeypatch。
+- 验证标准与回滚：独立审阅前保持未提交；需审阅 P0/P1 清零后重跑全量、compileall、敏感信息和差异检查才可提交。当前回滚仅需丢弃本 worktree 未提交实现，不影响生产。Git 分支 `codex/daily-dimension-task-isolation`，实现基线为已提交规格/计划 `23990c5`，产品实现尚未提交、未 push、未集成、未发布。
+
+#### 2026-09-07 23:31—2026-09-08 00:15（北京时间）— 首轮独立审阅整改
+
+- 审阅结论：首轮独立审阅 P0=0、P1=4、P2=2，明确禁止提交、集成和部署。P1 分别为既有 pending 维度任务不会重唤醒、首次启用会对最近三日产生历史回补、active 任务可能跨实例错误复用、先查后插存在并发重复。P2 为非 direct 模式语义不闭环，以及缺少新任务认领至维度事实入库的完整契约测试。
+- 整改方案与影响：保持核心日报最近三日补缺逻辑不变，维度只为最新成熟业务日新建；既有同实例 pending 维度任务在后续 scheduler pass 继续唤醒 runtime，in-progress/terminal 不重建。自动 request id 改为账号 key+日期的确定值；人工 request id 按同账号/日现有 attempt 数确定性递增，唯一冲突后只回读账号、日期、类型、实例全部匹配的原任务。跨实例 active 返回 409，非 direct 模式明确返回 409。生产顺序改为 allowlist 为空且 scheduler 停止时先人工验证，验证全部通过后才写单节点 allowlist并启动 scheduler。
+- TDD 证据：先增加三日核心成功只生成最新日维度和 pending 两轮重唤醒测试，旧实现分别得到 3 个任务而非 1 个、第二轮不启动的 2 个有效红灯；增加确定性 attempt、唯一冲突回读、跨实例 active、非 direct 边界，取得 6 个有效行为失败中的对应 4 个失败。最小实现后 scheduler 维度 11 passed、人工端点 7 passed。新增完整契约测试已直接通过，证明 `report_fetch_daily_dimension` 可被对应实例认领、上传 `admanager_daily_dimension_v1`、任务变为 succeeded、账户/Site 权威维度事实落库且核心日报事实保持为空。相关 Backend 组合回归 147 passed（11 条既有弃用告警），Collector 任务/Runtime 21 passed。
+- 规格与计划同步：已把最新日限制、pending 重唤醒、确定性防重、跨实例/非 direct 门禁、端到端契约和“先人工后自动”的发布顺序写回设计与实施计划，避免实现偏离书面规格。当前仍未提交、未连接生产、未触发真实 Google；需复审 P0/P1 清零后才可进入全量验证与提交。
+- 本阶段失误：一次同时修改规格与计划的长补丁因计划中的目标行并不存在而原子失败，无文件部分写入；正确替代为先读取计划真实段落，再按文件和精确锚点拆分应用。防再犯：审阅整改涉及多文档时不得猜测计划原文，必须先逐段核验。
+
+#### 2026-09-08 00:16—00:30（北京时间）— 独立复审与提交前最终门禁
+
+- 复审结论：独立审阅者逐项确认首轮 P1/P2 均已关闭，未发现新问题，最终 P0=0、P1=0、P2=0；允许提交和受控集成。生产仍只允许空 allowlist、停 scheduler、先人工验证 `ahzhhj`，成功后再启用单节点自动调度，不允许直接扩大。
+- 最终验证：Backend 全量 212 passed、15 条既有依赖弃用告警；Collector 全量 91 passed、1 条既有依赖弃用告警；Backend 与 Collector 在各自正确 cwd 的 `compileall -q app` 均通过；差异格式与敏感信息扫描待提交前再次确认。无真实 Google、生产代理、数据库或服务器写入。
+- 验证失误：首次从仓库根运行两个 `compileall -q app`，Python 输出 `Can't list 'app'` 但返回码为 0；该结果立即判无效且未用于完成声明。随后分别以 `backend`、`collector` 为 cwd 重跑并取得明确 `backend_compileall=ok`、`collector_compileall=ok`。防再犯：compileall 不仅检查退出码，还必须核目标目录存在并检查标准输出，仓库多模块需在各模块 cwd 或使用精确模块路径。
+- Git/发布：实现与治理文档仍未提交；下一步仅在 staged 路径、敏感信息和 `git diff --check` 全部通过后提交。生产尚未部署，无生产回滚项。

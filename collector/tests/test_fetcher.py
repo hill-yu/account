@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from app.adx_report_service import AdxHourlyReportRow
 from app.fetcher import AdManagerSoapReportFetcher
 from app.models import CollectorTask, FetchBatch
@@ -10,14 +12,16 @@ from app.proxy import ProxyConfig
 
 class FakeSoapService:
     def __init__(self) -> None:
-        self.daily_calls: list[tuple[date, int]] = []
+        self.core_calls: list[tuple[date, int]] = []
+        self.daily_dimension_calls: list[tuple[date, int]] = []
         self.hourly_calls: list[tuple[date, int]] = []
 
     def fetch_site_daily_dimension_report(self, *, report_date: date, task_id: int = 1):
-        self.daily_calls.append((report_date, task_id))
+        self.daily_dimension_calls.append((report_date, task_id))
         return ["daily-row"]
 
     def fetch_site_daily_report(self, *, report_date: date, task_id: int = 1):
+        self.core_calls.append((report_date, task_id))
         return ["core-row"]
 
     def build_fetch_batch(self, *, rows, batch_key: str = "page-1"):
@@ -78,7 +82,7 @@ class FakeSoapService:
         )
 
 
-def test_admanager_soap_fetcher_uses_daily_batch_for_report_fetch() -> None:
+def test_admanager_soap_fetcher_uses_only_core_batch_for_report_fetch() -> None:
     service = FakeSoapService()
     fetcher = AdManagerSoapReportFetcher(
         network_code="1234567",
@@ -98,12 +102,57 @@ def test_admanager_soap_fetcher_uses_daily_batch_for_report_fetch() -> None:
 
     batches = list(fetcher.fetch(task))
 
-    assert [batch.schema_version for batch in batches] == [
-        "admanager_site_core_v1",
-        "admanager_daily_dimension_v1",
-    ]
-    assert service.daily_calls == [(date(2026, 6, 25), 21)]
+    assert [batch.schema_version for batch in batches] == ["admanager_site_core_v1"]
+    assert service.core_calls == [(date(2026, 6, 25), 21)]
+    assert service.daily_dimension_calls == []
     assert service.hourly_calls == []
+
+
+def test_admanager_soap_fetcher_uses_only_dimension_batch_for_daily_dimension_task() -> None:
+    service = FakeSoapService()
+    fetcher = AdManagerSoapReportFetcher(
+        network_code="1234567",
+        client_id="client-id",
+        client_secret="client-secret",
+        refresh_token="refresh-token",
+        service=service,
+    )
+    task = CollectorTask(
+        id=23,
+        account_id=7,
+        collector_instance_id=7,
+        task_type="report_fetch_daily_dimension",
+        report_date=date(2026, 6, 25),
+        status="in_progress",
+    )
+
+    batches = list(fetcher.fetch(task))
+
+    assert [batch.schema_version for batch in batches] == ["admanager_daily_dimension_v1"]
+    assert service.core_calls == []
+    assert service.daily_dimension_calls == [(date(2026, 6, 25), 23)]
+    assert service.hourly_calls == []
+
+
+def test_admanager_soap_fetcher_rejects_unknown_report_task() -> None:
+    fetcher = AdManagerSoapReportFetcher(
+        network_code="1234567",
+        client_id="client-id",
+        client_secret="client-secret",
+        refresh_token="refresh-token",
+        service=FakeSoapService(),
+    )
+    task = CollectorTask(
+        id=24,
+        account_id=7,
+        collector_instance_id=7,
+        task_type="unexpected_report_task",
+        report_date=date(2026, 6, 25),
+        status="in_progress",
+    )
+
+    with pytest.raises(ValueError, match="Unsupported report task type"):
+        list(fetcher.fetch(task))
 
 
 def test_admanager_soap_fetcher_uses_hourly_batch_for_report_fetch_hourly() -> None:
@@ -128,7 +177,8 @@ def test_admanager_soap_fetcher_uses_hourly_batch_for_report_fetch_hourly() -> N
 
     assert len(batches) == 1
     assert batches[0].schema_version == "admanager_hourly_dimension_v1"
-    assert service.daily_calls == []
+    assert service.core_calls == []
+    assert service.daily_dimension_calls == []
     assert service.hourly_calls == [(date(2026, 6, 25), 22)]
 
 

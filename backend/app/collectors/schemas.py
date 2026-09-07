@@ -353,6 +353,15 @@ class ManualFetchResponse(BaseModel):
     hourly_sync_task_created: bool = False
 
 
+class ManualDailyDimensionFetchResponse(BaseModel):
+    ok: bool
+    status: str
+    request_id: str
+    dimension_sync_task_id: int
+    dimension_sync_task_status: str
+    dimension_sync_task_created: bool
+
+
 class HourlyCoverage(BaseModel):
     account_id: int
     report_date: date
