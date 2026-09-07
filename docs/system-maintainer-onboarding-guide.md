@@ -1274,9 +1274,18 @@ npm run build
 - 规格与计划同步：已把最新日限制、pending 重唤醒、确定性防重、跨实例/非 direct 门禁、端到端契约和“先人工后自动”的发布顺序写回设计与实施计划，避免实现偏离书面规格。当前仍未提交、未连接生产、未触发真实 Google；需复审 P0/P1 清零后才可进入全量验证与提交。
 - 本阶段失误：一次同时修改规格与计划的长补丁因计划中的目标行并不存在而原子失败，无文件部分写入；正确替代为先读取计划真实段落，再按文件和精确锚点拆分应用。防再犯：审阅整改涉及多文档时不得猜测计划原文，必须先逐段核验。
 
-#### 2026-09-08 00:16—00:30（北京时间）— 独立复审与提交前最终门禁
+#### 2026-09-07 23:31—23:40（北京时间）— 独立复审与提交前最终门禁
 
 - 复审结论：独立审阅者逐项确认首轮 P1/P2 均已关闭，未发现新问题，最终 P0=0、P1=0、P2=0；允许提交和受控集成。生产仍只允许空 allowlist、停 scheduler、先人工验证 `ahzhhj`，成功后再启用单节点自动调度，不允许直接扩大。
 - 最终验证：Backend 全量 212 passed、15 条既有依赖弃用告警；Collector 全量 91 passed、1 条既有依赖弃用告警；Backend 与 Collector 在各自正确 cwd 的 `compileall -q app` 均通过；差异格式与敏感信息扫描待提交前再次确认。无真实 Google、生产代理、数据库或服务器写入。
 - 验证失误：首次从仓库根运行两个 `compileall -q app`，Python 输出 `Can't list 'app'` 但返回码为 0；该结果立即判无效且未用于完成声明。随后分别以 `backend`、`collector` 为 cwd 重跑并取得明确 `backend_compileall=ok`、`collector_compileall=ok`。防再犯：compileall 不仅检查退出码，还必须核目标目录存在并检查标准输出，仓库多模块需在各模块 cwd 或使用精确模块路径。
 - Git/发布：实现与治理文档仍未提交；下一步仅在 staged 路径、敏感信息和 `git diff --check` 全部通过后提交。生产尚未部署，无生产回滚项。
+
+#### 2026-09-07 23:41—2026-09-08 00:10（北京时间）— 集成完成、生产发布暂停并恢复原调度
+
+- Git 集成：功能提交 `d71c3c3` 已生成。正式 master worktree 严格 Validate 因两份治理文档存在用户未提交修改而停止，未 stash/reset/覆盖；随后按规则从 `origin/master@29c8a03` 新建严格门禁通过的临时集成 worktree `D:\code\adx-mid-platform\.worktrees\daily-dimension-master-integration`，快进至 `d71c3c3`。集成态 Backend 212 passed、Collector 91 passed、双端 compileall 通过；fetch 后确认远端未移动，已将 `origin/master` 快进到 `d71c3c3`。原脏 master worktree保持原样。
+- 生产只读预检：九个目标运行文件 SHA-256 分别精确匹配既有生产基线：backend config/router 为 `29c8a03`，fetch_policy 为 `352cad5`，schemas 为 `9192359`，service/scheduler 为 `a84d614`，collector 三文件为 `355a24e`。`ahzhhj.com` 唯一映射为 account 53、instance 52、实际 key `ahzhhj`，Asia/Hong_Kong；OAuth authorized/healthy，policy active 且 gray/hourly/daily/manual 均开启，代理 active，schedule 为 Pacific 每小时；最新成熟业务日 2026-09-06 的核心任务 `71763` succeeded，核心事实 Requests=2,684，维度任务和维度事实均为 0，账号无 active 任务。源库 `quick_check=ok`，磁盘写前 30%、约 106GB 可用。
+- 写前保护与暂停决定：00:xx 按计划停止 scheduler并确认无 collector runtime；创建 `/srv/adx-account-isolated-collector/backups/20260907T155839Z-pre-daily-dimension-isolation`，已保存九个运行文件、`.env`、systemd unit、服务状态与写前 hash。SQLite online backup 已生成约 15GB 文件，但在源/备份双 quick_check 尚未完成时，用户明确要求今晚恢复生产、明天继续部署。立即终止本次专用备份校验进程，将文件重命名为 `control_plane.db.incomplete` 并写入 `INCOMPLETE` 标记，明确禁止用于回滚；未删除该文件，当前磁盘 40%、约 92GB 可用。
+- 恢复结果：生产运行代码从未替换，环境变量和数据库业务数据未由部署脚本修改。已启动原 `adx-control-plane-scheduler.service`；Web/scheduler 均 active/running、NRestarts=0、`/health` 返回 ok、无 collector runtime 残留。恢复后 scheduler 实际创建 3 条到期任务：`stones` 与 `uragnv.com` 小时任务 succeeded，`ldsjys.com` 日报任务 pending，证明原调度继续工作。部署状态为**Git master 已集成，生产代码未部署，原生产已恢复**。明日必须重新核现场、停止 scheduler并创建新的完整双 quick-check 保护点，禁止复用 incomplete 文件。
+- 本轮失败与正确替代：①本机不存在预设路径的 openssl/sha256sum，未执行 hash；改为从实际 Git 安装目录定位 `D:\software\Git\usr\bin\sha256sum.exe`，九个历史 blob hash 与生产完全一致。②首次以 stdin 发送只读 Python 因 SSH 管道未结束，本机终止唯一对应 SSH 进程；改用 Base64 参数传输。③首次 Base64 远端命令因 PowerShell 双引号被提前解释，远端 Python `IndentationError` 且本机将片段误当命令；改为拼接单引号 remote command 后成功。④两次把全库 quick_check 与业务查询放在 20/55 秒硬 timeout 内，无结果即退出；拆分业务查询后，仅源库 `quick_check` 通过可轮询长任务取得 `ok`。备份库 `quick_check` 尚未完成即按用户要求中止，结果无效，已标记为 incomplete 并永久禁止作为回滚点。⑤一次内联 PowerShell/Python SQL 因嵌套引号 ParserError，SSH未发起；改回已验证 here-string→Base64 模板。以上失败均未执行生产数据/代码写入；备份任务被用户暂停后按精确 PID终止并标记，不影响源库。
+- 回滚：本轮生产没有发布内容，无需代码或数据回滚。若需释放 incomplete 文件空间，必须另行确认精确路径后删除整个本次未完成保护点；当前保留作中断审计，不得当作有效备份。
