@@ -1241,3 +1241,12 @@ npm run build
 - 失败操作闭环：①发布前联查首次使用不存在的 `p.hourly_enabled`，SQLite 只读 SELECT 报列不存在；立即用 `PRAGMA table_info` 校准为 `hourly_fetch_enabled` 后成功，未写入。②备份脚本完成数据库复制和双 quick_check 后，最后的 systemctl 展示因 PowerShell here-string 尾部 CR 把参数变为 `--no-pager\r` 而非零；备份已完成且 scheduler 保持停止，改用无尾部参数的独立命令确认状态。防再犯：生产 SQL 必须先读现场 schema；跨 PowerShell/SSH 的最后一条验证不得放在可能附加 CR 的 here-string 尾部。
 - 最终独立审阅：P0=0、P1=0、P2=0。审阅确认19/19配置条件与下一窗口运行实证的边界清楚，两节点频率影响、定向回滚和错误闭环完整，未发现敏感凭据；允许提交本轮两份治理文档。
 - Git 提交门禁失误：首次用 PowerShell 直接比较 `git diff --cached --name-only` 的中文路径，Git 默认引号转义使 `docs/问题记录.md` 显示为八进制转义字符串，脚本误报 staged 文件异常并在 commit/push 前停止；实际暂存仍仅两份目标文档，无生产或远端 Git 影响。正确替代为使用 `-z` NUL 分隔并按 UTF-8 路径解析，或以 `git -c core.quotePath=false` 获取可比较路径；防再犯要求中文路径集合校验不得依赖默认转义文本。
+
+#### 2026-09-07 21:47—22:10（北京时间）— 权威维度日报独立任务设计与生产差异核验
+
+- 目标与授权：用户确认采用独立维度任务方案，并明确授权仅使用 `ahzhhj.com` 当前绑定的生产代理进行首批真实测试。当前阶段只完成根因、影响范围、书面设计和隔离 worktree，不触发 Google、不修改生产。
+- 根因证据：生产运行目录不是 Git worktree；生产采集端 `fetcher.py`、`adx_report_service.py`、`admanager_soap.py` 精确匹配旧基线 `355a24e`，没有日报维度抓取。正式 `origin/master@29c8a03` 虽含维度抓取，但把核心与维度放入同一 `report_fetch`，且 runtime 会先把 iterable 全部转为 list；维度 SOAP 在返回前失败会阻止核心 batch 上传，不能原样发布。
+- 设计：新增 `report_fetch_daily_dimension`；核心 `report_fetch` 恢复为只产核心 batch。维度自动创建受默认空的 `ADX_COLLECTOR_DAILY_DIMENSION_ACCOUNT_KEYS` 控制，只在业务日成熟、核心日报成功且同日从未有维度尝试时创建一次；失败只允许人工入口受控重试，避免任务风暴。第一批 allowlist 只使用现场核验出的 `ahzhhj` 实际 account key。
+- 备份与回滚设计：写前停 scheduler 并等待 collector 子进程退出；保存 SQLite online backup、源/备份 quick check、全部目标运行文件、`.env`、unit、服务/进程状态、hash 和 ahzhhj 写前事实。发布只从已审阅并集成 master 的提交同步。回滚优先清空 allowlist、恢复精确文件和环境；维度任务/事实默认保留审计，需清理时另行备份并定向操作；禁止直接整库恢复覆盖保护点后的正常写入。
+- 失败操作闭环：创建 worktree 前首次用 linked worktree 执行绝对路径 `git check-ignore`，Git 报目标在当前 worktree 外；随即改为对仓库根使用相对 `.worktrees` 检查，门禁成功。首次尝试一次 apply_patch 同时新增规格并以错误标题 `## 22. 变更记录` 定位台账，因真实标题为 `## 22. 功能/代码变更记录（追加式台账）` 整个 patch 原子失败、没有文件改变；改为先精确检索标题，再将新文件与追加记录拆开应用。防再犯：linked worktree 的 ignore 检查使用仓库相对路径；追加式文档先 `rg` 获取现场精确锚点，不猜标题。
+- Worktree/Git/发布：新 worktree `D:\code\adx-mid-platform\.worktrees\daily-dimension-task-isolation`，分支 `codex/daily-dimension-task-isolation`，创建时 HEAD 与 `origin/master` 均为 `29c8a03384a2216c8d437bf5649c7cfb23d9f960`、三份治理文件一致且工作区干净。当前仅文档设计变更，尚未审阅、提交、推送、集成或部署；生产无写入、无回滚项。
