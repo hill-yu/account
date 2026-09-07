@@ -1250,3 +1250,9 @@ npm run build
 - 备份与回滚设计：写前停 scheduler 并等待 collector 子进程退出；保存 SQLite online backup、源/备份 quick check、全部目标运行文件、`.env`、unit、服务/进程状态、hash 和 ahzhhj 写前事实。发布只从已审阅并集成 master 的提交同步。回滚优先清空 allowlist、恢复精确文件和环境；维度任务/事实默认保留审计，需清理时另行备份并定向操作；禁止直接整库恢复覆盖保护点后的正常写入。
 - 失败操作闭环：创建 worktree 前首次用 linked worktree 执行绝对路径 `git check-ignore`，Git 报目标在当前 worktree 外；随即改为对仓库根使用相对 `.worktrees` 检查，门禁成功。首次尝试一次 apply_patch 同时新增规格并以错误标题 `## 22. 变更记录` 定位台账，因真实标题为 `## 22. 功能/代码变更记录（追加式台账）` 整个 patch 原子失败、没有文件改变；改为先精确检索标题，再将新文件与追加记录拆开应用。防再犯：linked worktree 的 ignore 检查使用仓库相对路径；追加式文档先 `rg` 获取现场精确锚点，不猜标题。
 - Worktree/Git/发布：新 worktree `D:\code\adx-mid-platform\.worktrees\daily-dimension-task-isolation`，分支 `codex/daily-dimension-task-isolation`，创建时 HEAD 与 `origin/master` 均为 `29c8a03384a2216c8d437bf5649c7cfb23d9f960`、三份治理文件一致且工作区干净。当前仅文档设计变更，尚未审阅、提交、推送、集成或部署；生产无写入、无回滚项。
+
+#### 2026-09-07 22:11（北京时间）— 权威维度日报独立任务实施计划
+
+- 用户决定：保持现有业务日结束后五小时成熟门禁，不改为三小时；继续按已确认规格完成开发和部署。
+- 实施计划：新增 `docs/superpowers/plans/2026-09-07-daily-dimension-task-isolation-implementation.md`，分七项锁定采集分派、人工入口、默认关闭 allowlist 自动调度、全量回归、独立审阅、受控 master 集成以及生产保护点/单节点灰度/回滚。计划明确无数据库迁移、代码审阅前不提交实现、首批只允许 `ahzhhj.com` 及其现有绑定代理。
+- 验证、写入与发布：本阶段仅本地文档，已逐项对照规格覆盖目标、非目标、故障隔离、自动防重、人工重试、OAuth、备份和回滚；尚未修改产品代码、运行测试或触发生产。文档可用反向提交回滚，生产无回滚项。
