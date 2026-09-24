@@ -1,0 +1,14 @@
+[Unit]
+Description=ADX VPS Fetch API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/adx-account-isolated-collector/collector
+EnvironmentFile=/srv/adx-account-isolated-collector/deploy/vps/env/adx-fetch-api.env
+ExecStart=/bin/sh -c '/srv/adx-account-isolated-collector/collector/.venv/bin/python -m uvicorn app.vps_api:app --host "${ADX_VPS_BIND_HOST:-127.0.0.1}" --port "${ADX_VPS_BIND_PORT:-9100}"'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
